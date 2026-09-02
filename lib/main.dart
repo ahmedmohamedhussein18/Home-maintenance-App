@@ -38,7 +38,7 @@ class _HomeMaintenanceAppState extends State<HomeMaintenanceApp> {
         brightness: Brightness.dark,
       ),
       themeMode: isDarkMode ? ThemeMode.dark : ThemeMode.light,
-      home: SplashScreen(
+      home: AppRoot(
         isDarkMode: isDarkMode,
         isEnglish: isEnglish,
         onThemeChanged: (value) => setState(() => isDarkMode = value),
@@ -48,15 +48,17 @@ class _HomeMaintenanceAppState extends State<HomeMaintenanceApp> {
   }
 }
 
-// ---------------------- SPLASH SCREEN ----------------------
+// ---------------------- APP ROOT (HOME SCREEN + SPLASH OVERLAY) ----------------------
+// The splash is an overlay on top of the real home screen (not a separate
+// route), so toggling dark mode / language always reaches the live screen.
 
-class SplashScreen extends StatefulWidget {
+class AppRoot extends StatefulWidget {
   final bool isDarkMode;
   final bool isEnglish;
   final ValueChanged<bool> onThemeChanged;
   final ValueChanged<bool> onLanguageChanged;
 
-  const SplashScreen({
+  const AppRoot({
     super.key,
     required this.isDarkMode,
     required this.isEnglish,
@@ -65,13 +67,13 @@ class SplashScreen extends StatefulWidget {
   });
 
   @override
-  State<SplashScreen> createState() => _SplashScreenState();
+  State<AppRoot> createState() => _AppRootState();
 }
 
-class _SplashScreenState extends State<SplashScreen>
-    with SingleTickerProviderStateMixin {
+class _AppRootState extends State<AppRoot> with SingleTickerProviderStateMixin {
+  bool _showSplash = true;
   late final AnimationController _controller;
-  late final Animation<double> _fadeAnimation;
+  late final Animation<double> _fadeInAnimation;
   late final Animation<double> _scaleAnimation;
 
   @override
@@ -81,33 +83,22 @@ class _SplashScreenState extends State<SplashScreen>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     );
-    _fadeAnimation = CurvedAnimation(parent: _controller, curve: Curves.easeIn);
+    _fadeInAnimation = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeIn,
+    );
     _scaleAnimation = Tween<double>(
       begin: 0.7,
       end: 1.0,
     ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutBack));
     _controller.forward();
-    _goToHome();
+    _hideSplashAfterDelay();
   }
 
-  Future<void> _goToHome() async {
+  Future<void> _hideSplashAfterDelay() async {
     await Future.delayed(const Duration(milliseconds: 2200));
     if (!mounted) return;
-    Navigator.of(context).pushReplacement(
-      PageRouteBuilder(
-        transitionDuration: const Duration(milliseconds: 500),
-        pageBuilder: (context, animation, secondaryAnimation) =>
-            MaintenanceHomeScreen(
-              isDarkMode: widget.isDarkMode,
-              isEnglish: widget.isEnglish,
-              onThemeChanged: widget.onThemeChanged,
-              onLanguageChanged: widget.onLanguageChanged,
-            ),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) {
-          return FadeTransition(opacity: animation, child: child);
-        },
-      ),
-    );
+    setState(() => _showSplash = false);
   }
 
   @override
@@ -118,58 +109,96 @@ class _SplashScreenState extends State<SplashScreen>
 
   @override
   Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        MaintenanceHomeScreen(
+          isDarkMode: widget.isDarkMode,
+          isEnglish: widget.isEnglish,
+          onThemeChanged: widget.onThemeChanged,
+          onLanguageChanged: widget.onLanguageChanged,
+        ),
+        IgnorePointer(
+          ignoring: !_showSplash,
+          child: AnimatedOpacity(
+            opacity: _showSplash ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 500),
+            child: _SplashContent(
+              isEnglish: widget.isEnglish,
+              fadeAnimation: _fadeInAnimation,
+              scaleAnimation: _scaleAnimation,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SplashContent extends StatelessWidget {
+  final bool isEnglish;
+  final Animation<double> fadeAnimation;
+  final Animation<double> scaleAnimation;
+
+  const _SplashContent({
+    required this.isEnglish,
+    required this.fadeAnimation,
+    required this.scaleAnimation,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    return Scaffold(
-      backgroundColor: colorScheme.primary,
-      body: Center(
-        child: FadeTransition(
-          opacity: _fadeAnimation,
-          child: ScaleTransition(
-            scale: _scaleAnimation,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(24),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.15),
-                    shape: BoxShape.circle,
+    return Material(
+      color: colorScheme.primary,
+      child: SizedBox.expand(
+        child: Center(
+          child: FadeTransition(
+            opacity: fadeAnimation,
+            child: ScaleTransition(
+              scale: scaleAnimation,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.15),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.home_repair_service,
+                      size: 64,
+                      color: Colors.white,
+                    ),
                   ),
-                  child: const Icon(
-                    Icons.home_repair_service,
-                    size: 64,
-                    color: Colors.white,
+                  const SizedBox(height: 24),
+                  Text(
+                    isEnglish ? 'Welcome' : 'مرحباً بك',
+                    style: const TextStyle(
+                      fontSize: 26,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 24),
-                Text(
-                  widget.isEnglish ? 'Welcome' : 'مرحباً بك',
-                  style: const TextStyle(
-                    fontSize: 26,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
+                  const SizedBox(height: 8),
+                  Text(
+                    isEnglish ? 'Home Maintenance App' : 'تطبيق صيانة البيت',
+                    style: TextStyle(
+                      fontSize: 15,
+                      color: Colors.white.withOpacity(0.85),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  widget.isEnglish
-                      ? 'Home Maintenance App'
-                      : 'تطبيق صيانة البيت',
-                  style: TextStyle(
-                    fontSize: 15,
-                    color: Colors.white.withOpacity(0.85),
+                  const SizedBox(height: 32),
+                  const SizedBox(
+                    width: 28,
+                    height: 28,
+                    child: CircularProgressIndicator(
+                      color: Colors.white,
+                      strokeWidth: 2.5,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 32),
-                const SizedBox(
-                  width: 28,
-                  height: 28,
-                  child: CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2.5,
-                  ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
