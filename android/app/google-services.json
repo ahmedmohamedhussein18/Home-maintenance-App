@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "713085086615",
+    "firebase_url": "https://home-maintenance-app-c2dd1-default-rtdb.europe-west1.firebasedatabase.app",
+    "project_id": "home-maintenance-app-c2dd1",
+    "storage_bucket": "home-maintenance-app-c2dd1.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:713085086615:android:77a63e0bef89ba3c89b2d2",
+        "android_client_info": {
+          "package_name": "com.example.home_maintenance_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAo3u34pR2nZKO7yIac-Z-AfaS9vFYut5s"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

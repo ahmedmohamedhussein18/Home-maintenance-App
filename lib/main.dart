@@ -1,12 +1,18 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-void main() {
+import 'firebase_options.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   runApp(const HomeMaintenanceApp());
 }
 
@@ -72,23 +78,240 @@ class _HomeMaintenanceAppState extends State<HomeMaintenanceApp> {
         brightness: Brightness.dark,
       ),
       themeMode: isDarkMode ? ThemeMode.dark : ThemeMode.light,
-      home: AppRoot(
-        isDarkMode: isDarkMode,
-        isEnglish: isEnglish,
-        onThemeChanged: (value) {
-          setState(() => isDarkMode = value);
-          _saveSettings();
-        },
-        onLanguageChanged: (value) {
-          setState(() => isEnglish = value);
-          _saveSettings();
+      home: StreamBuilder<User?>(
+        stream: FirebaseAuth.instance.authStateChanges(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return Scaffold(
+              body: Center(
+                child: CircularProgressIndicator(color: Colors.blue.shade400),
+              ),
+            );
+          }
+
+          final isLoggedIn = snapshot.hasData;
+
+          return isLoggedIn
+              ? AppRoot(
+                  isDarkMode: isDarkMode,
+                  isEnglish: isEnglish,
+                  onThemeChanged: (value) {
+                    setState(() => isDarkMode = value);
+                    _saveSettings();
+                  },
+                  onLanguageChanged: (value) {
+                    setState(() => isEnglish = value);
+                    _saveSettings();
+                  },
+                )
+              : LoginScreen(
+                  isEnglish: isEnglish,
+                  isDarkMode: isDarkMode,
+                  onLanguageChanged: (value) {
+                    setState(() => isEnglish = value);
+                    _saveSettings();
+                  },
+                  onThemeChanged: (value) {
+                    setState(() => isDarkMode = value);
+                    _saveSettings();
+                  },
+                );
         },
       ),
     );
   }
 }
 
-// ---------------------- APP ROOT (HOME SCREEN + SPLASH OVERLAY) ----------------------
+// ---------------------- LOGIN SCREEN ----------------------
+
+class LoginScreen extends StatefulWidget {
+  final bool isEnglish;
+  final bool isDarkMode;
+  final ValueChanged<bool> onLanguageChanged;
+  final ValueChanged<bool> onThemeChanged;
+
+  const LoginScreen({
+    super.key,
+    required this.isEnglish,
+    required this.isDarkMode,
+    required this.onLanguageChanged,
+    required this.onThemeChanged,
+  });
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  late TextEditingController _emailController;
+  late TextEditingController _passwordController;
+  bool _isLoading = false;
+  String? _errorMessage;
+  bool _isLoginMode = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _emailController = TextEditingController();
+    _passwordController = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    _emailController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _authenticate() async {
+    final email = _emailController.text.trim();
+    final password = _passwordController.text.trim();
+
+    if (email.isEmpty || password.isEmpty) {
+      setState(() {
+        _errorMessage = widget.isEnglish
+            ? 'Please fill all fields'
+            : 'من فضلك املأ جميع الحقول';
+      });
+      return;
+    }
+
+    setState(() => _isLoading = true);
+
+    try {
+      if (_isLoginMode) {
+        await FirebaseAuth.instance.signInWithEmailAndPassword(
+          email: email,
+          password: password,
+        );
+      } else {
+        await FirebaseAuth.instance.createUserWithEmailAndPassword(
+          email: email,
+          password: password,
+        );
+      }
+      setState(() => _errorMessage = null);
+    } on FirebaseAuthException catch (e) {
+      setState(() {
+        _errorMessage = widget.isEnglish
+            ? e.message ?? 'Auth failed'
+            : 'فشل التحقق';
+      });
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(widget.isEnglish ? 'Home Maintenance' : 'صيانة البيت'),
+        actions: [
+          IconButton(
+            icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode),
+            onPressed: () => widget.onThemeChanged(!widget.isDarkMode),
+          ),
+          IconButton(
+            icon: const Icon(Icons.language),
+            onPressed: () => widget.onLanguageChanged(!widget.isEnglish),
+          ),
+        ],
+      ),
+      body: Center(
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.home_repair_service, size: 80, color: Colors.blue),
+                const SizedBox(height: 32),
+                Text(
+                  _isLoginMode
+                      ? (widget.isEnglish ? 'Sign In' : 'تسجيل الدخول')
+                      : (widget.isEnglish ? 'Create Account' : 'إنشاء حساب'),
+                  style: const TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 32),
+                TextField(
+                  controller: _emailController,
+                  decoration: InputDecoration(
+                    labelText: widget.isEnglish ? 'Email' : 'البريد الإلكتروني',
+                    prefixIcon: const Icon(Icons.email),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  keyboardType: TextInputType.emailAddress,
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _passwordController,
+                  decoration: InputDecoration(
+                    labelText: widget.isEnglish ? 'Password' : 'كلمة المرور',
+                    prefixIcon: const Icon(Icons.lock),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  obscureText: true,
+                ),
+                const SizedBox(height: 16),
+                if (_errorMessage != null)
+                  Text(
+                    _errorMessage!,
+                    style: const TextStyle(color: Colors.red, fontSize: 14),
+                  ),
+                const SizedBox(height: 24),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _isLoading ? null : _authenticate,
+                    child: _isLoading
+                        ? const CircularProgressIndicator()
+                        : Text(
+                            _isLoginMode
+                                ? (widget.isEnglish
+                                      ? 'Sign In'
+                                      : 'تسجيل الدخول')
+                                : (widget.isEnglish
+                                      ? 'Create Account'
+                                      : 'إنشاء حساب'),
+                          ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _isLoginMode = !_isLoginMode;
+                      _errorMessage = null;
+                    });
+                  },
+                  child: Text(
+                    _isLoginMode
+                        ? (widget.isEnglish
+                              ? "Don't have an account? Sign up"
+                              : "ليس لديك حساب؟ أنشئ واحداً")
+                        : (widget.isEnglish
+                              ? "Already have an account? Sign in"
+                              : "هل لديك حساب؟ تسجيل الدخول"),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------------- APP ROOT ----------------------
 
 class AppRoot extends StatefulWidget {
   final bool isDarkMode;
@@ -248,12 +471,16 @@ class _SplashContent extends StatelessWidget {
 // ---------------------- MODELS ----------------------
 
 class MaintenanceItem {
+  final String id;
+  final String userId;
   final String title;
   final DateTime targetDate;
   final double cost;
-  final String? imageBase64; // صورة الجهاز (base64)
+  final String? imageBase64;
 
   MaintenanceItem({
+    required this.id,
+    required this.userId,
     required this.title,
     required this.targetDate,
     required this.cost,
@@ -273,9 +500,7 @@ class MaintenanceItem {
     if (t.contains('ثلاج') || t.contains('fridge')) return Icons.kitchen;
     if (t.contains('تكييف') || t.contains('ac')) return Icons.ac_unit;
     if (t.contains('فلتر') || t.contains('water')) return Icons.water_drop;
-    if (t.contains('سيار') || t.contains('car') || t.contains('زيت')) {
-      return Icons.directions_car;
-    }
+    if (t.contains('سيار') || t.contains('car')) return Icons.directions_car;
     if (t.contains('غسال') || t.contains('washer')) {
       return Icons.local_laundry_service;
     }
@@ -296,6 +521,8 @@ class MaintenanceItem {
   }
 
   Map<String, dynamic> toJson() => {
+    'id': id,
+    'userId': userId,
     'title': title,
     'targetDate': targetDate.toIso8601String(),
     'cost': cost,
@@ -304,6 +531,8 @@ class MaintenanceItem {
 
   factory MaintenanceItem.fromJson(Map<String, dynamic> json) {
     return MaintenanceItem(
+      id: json['id'] as String? ?? '',
+      userId: json['userId'] as String? ?? '',
       title: json['title'] as String,
       targetDate: DateTime.parse(json['targetDate'] as String),
       cost: (json['cost'] as num).toDouble(),
@@ -313,57 +542,32 @@ class MaintenanceItem {
 }
 
 class EmergencyContact {
+  final String id;
+  final String userId;
   final String title;
   final String phone;
 
-  EmergencyContact({required this.title, required this.phone});
+  EmergencyContact({
+    required this.id,
+    required this.userId,
+    required this.title,
+    required this.phone,
+  });
 
-  Map<String, dynamic> toJson() => {'title': title, 'phone': phone};
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'userId': userId,
+    'title': title,
+    'phone': phone,
+  };
 
   factory EmergencyContact.fromJson(Map<String, dynamic> json) {
     return EmergencyContact(
+      id: json['id'] as String? ?? '',
+      userId: json['userId'] as String? ?? '',
       title: json['title'] as String,
       phone: json['phone'] as String,
     );
-  }
-}
-
-// ---------------------- STORAGE ----------------------
-
-class StorageService {
-  static const _itemsKey = 'maintenance_items';
-  static const _contactsKey = 'emergency_contacts';
-
-  static Future<void> saveItems(List<MaintenanceItem> items) async {
-    final prefs = await SharedPreferences.getInstance();
-    final list = items.map((e) => e.toJson()).toList();
-    await prefs.setString(_itemsKey, jsonEncode(list));
-  }
-
-  static Future<List<MaintenanceItem>> loadItems() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_itemsKey);
-    if (raw == null) return [];
-    final list = jsonDecode(raw) as List;
-    return list
-        .map((e) => MaintenanceItem.fromJson(e as Map<String, dynamic>))
-        .toList();
-  }
-
-  static Future<void> saveContacts(List<EmergencyContact> contacts) async {
-    final prefs = await SharedPreferences.getInstance();
-    final list = contacts.map((e) => e.toJson()).toList();
-    await prefs.setString(_contactsKey, jsonEncode(list));
-  }
-
-  static Future<List<EmergencyContact>> loadContacts() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_contactsKey);
-    if (raw == null) return [];
-    final list = jsonDecode(raw) as List;
-    return list
-        .map((e) => EmergencyContact.fromJson(e as Map<String, dynamic>))
-        .toList();
   }
 }
 
@@ -396,6 +600,11 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
 
   late TextEditingController _searchController;
   String _selectedCategory = 'All';
+
+  final DatabaseReference _itemsRef = FirebaseDatabase.instance.ref('items');
+  final DatabaseReference _contactsRef = FirebaseDatabase.instance.ref(
+    'contacts',
+  );
 
   @override
   void initState() {
@@ -446,14 +655,44 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
   }
 
   Future<void> _loadData() async {
-    final loadedItems = await StorageService.loadItems();
-    final loadedContacts = await StorageService.loadContacts();
-    setState(() {
-      items = loadedItems;
-      contacts = loadedContacts;
-      _sortItems();
-      _isLoading = false;
-    });
+    final userId = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (userId.isEmpty) {
+      setState(() => _isLoading = false);
+      return;
+    }
+
+    try {
+      final itemsSnapshot = await _itemsRef.child(userId).get();
+      final contactsSnapshot = await _contactsRef.child(userId).get();
+
+      setState(() {
+        items.clear();
+        contacts.clear();
+
+        if (itemsSnapshot.exists) {
+          final itemsData = itemsSnapshot.value as Map?;
+          itemsData?.forEach((key, value) {
+            final map = Map<String, dynamic>.from(value as Map);
+            map['id'] = key;
+            items.add(MaintenanceItem.fromJson(map));
+          });
+        }
+
+        if (contactsSnapshot.exists) {
+          final contactsData = contactsSnapshot.value as Map?;
+          contactsData?.forEach((key, value) {
+            final map = Map<String, dynamic>.from(value as Map);
+            map['id'] = key;
+            contacts.add(EmergencyContact.fromJson(map));
+          });
+        }
+
+        _sortItems();
+        _isLoading = false;
+      });
+    } catch (e) {
+      setState(() => _isLoading = false);
+    }
   }
 
   void _sortItems() {
@@ -461,30 +700,24 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
   }
 
   Future<void> _persistItems() async {
+    final userId = FirebaseAuth.instance.currentUser?.uid ?? '';
     _sortItems();
-    await StorageService.saveItems(items);
+    for (var item in items) {
+      await _itemsRef.child(userId).child(item.id).set(item.toJson());
+    }
   }
 
   Future<void> _persistContacts() async {
-    await StorageService.saveContacts(contacts);
+    final userId = FirebaseAuth.instance.currentUser?.uid ?? '';
+    for (var contact in contacts) {
+      await _contactsRef.child(userId).child(contact.id).set(contact.toJson());
+    }
   }
 
   Future<void> _makePhoneCall(String phoneNumber) async {
     final Uri launchUri = Uri(scheme: 'tel', path: phoneNumber);
     if (await canLaunchUrl(launchUri)) {
       await launchUrl(launchUri);
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              widget.isEnglish
-                  ? 'Could not call $phoneNumber'
-                  : 'تعذر إجراء الاتصال بالرقم $phoneNumber',
-            ),
-          ),
-        );
-      }
     }
   }
 
@@ -492,12 +725,11 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
     final picker = ImagePicker();
     final XFile? pickedFile = await picker.pickImage(
       source: ImageSource.gallery,
-      imageQuality: 80, // تقليل جودة الصورة لتقليل الحجم
+      imageQuality: 80,
     );
-
     if (pickedFile != null) {
       final bytes = await pickedFile.readAsBytes();
-      return base64Encode(bytes); // تحويل الصورة إلى base64
+      return base64Encode(bytes);
     }
     return null;
   }
@@ -585,8 +817,6 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
                       ],
                     ),
                     const SizedBox(height: 16),
-
-                    // صورة الجهاز
                     if (imageBase64 != null)
                       Container(
                         height: 150,
@@ -595,12 +825,10 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
                           borderRadius: BorderRadius.circular(12),
                           border: Border.all(color: Colors.blue),
                         ),
-child: imageBase64 != null
-    ? Image.memory(
-        base64Decode(imageBase64!),
-        fit: BoxFit.cover,
-      )
-    : const SizedBox.shrink(),
+                        child: Image.memory(
+                          base64Decode(imageBase64!),
+                          fit: BoxFit.cover,
+                        ),
                       ),
                     if (imageBase64 != null) const SizedBox(height: 12),
                     Row(
@@ -643,7 +871,6 @@ child: imageBase64 != null
                         ],
                       ],
                     ),
-
                     if (errorText != null) ...[
                       const SizedBox(height: 12),
                       Text(
@@ -660,7 +887,7 @@ child: imageBase64 != null
                   child: Text(widget.isEnglish ? 'Cancel' : 'إلغاء'),
                 ),
                 ElevatedButton(
-                  onPressed: () {
+                  onPressed: () async {
                     final title = titleController.text.trim();
                     final costValue = double.tryParse(
                       costController.text.trim().replaceAll(',', '.'),
@@ -692,7 +919,12 @@ child: imageBase64 != null
                       return;
                     }
 
+                    final userId = FirebaseAuth.instance.currentUser?.uid ?? '';
                     final newItem = MaintenanceItem(
+                      id:
+                          existing?.id ??
+                          DateTime.now().millisecondsSinceEpoch.toString(),
+                      userId: userId,
                       title: title,
                       targetDate: selectedDate!,
                       cost: costValue ?? 0.0,
@@ -706,7 +938,7 @@ child: imageBase64 != null
                         items.add(newItem);
                       }
                     });
-                    _persistItems();
+                    await _persistItems();
                     Navigator.pop(context);
                   },
                   child: Text(widget.isEnglish ? 'Save' : 'حفظ'),
@@ -737,19 +969,20 @@ child: imageBase64 != null
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () {
+            onPressed: () async {
+              final userId = FirebaseAuth.instance.currentUser?.uid ?? '';
               Navigator.pop(context);
               setState(() {
                 items.removeAt(index);
               });
-              _persistItems();
+              await _itemsRef.child(userId).child(removedItem.id).remove();
               _showUndoSnackBar(
                 message: widget.isEnglish ? 'Device deleted' : 'تم حذف الجهاز',
-                onUndo: () {
+                onUndo: () async {
                   setState(() {
                     items.insert(index, removedItem);
                   });
-                  _persistItems();
+                  await _persistItems();
                 },
               );
             },
@@ -834,7 +1067,7 @@ child: imageBase64 != null
                   child: Text(widget.isEnglish ? 'Cancel' : 'إلغاء'),
                 ),
                 ElevatedButton(
-                  onPressed: () {
+                  onPressed: () async {
                     final name = nameController.text.trim();
                     final phone = phoneController.text.trim();
 
@@ -846,17 +1079,13 @@ child: imageBase64 != null
                       });
                       return;
                     }
-                    final phoneRegex = RegExp(r'^[0-9+\s]{7,15}$');
-                    if (!phoneRegex.hasMatch(phone)) {
-                      setDialogState(() {
-                        errorText = widget.isEnglish
-                            ? 'Enter a valid phone number'
-                            : 'رقم الهاتف غير صحيح';
-                      });
-                      return;
-                    }
 
+                    final userId = FirebaseAuth.instance.currentUser?.uid ?? '';
                     final newContact = EmergencyContact(
+                      id:
+                          existing?.id ??
+                          DateTime.now().millisecondsSinceEpoch.toString(),
+                      userId: userId,
                       title: name,
                       phone: phone,
                     );
@@ -868,7 +1097,7 @@ child: imageBase64 != null
                         contacts.add(newContact);
                       }
                     });
-                    _persistContacts();
+                    await _persistContacts();
                     Navigator.pop(context);
                   },
                   child: Text(widget.isEnglish ? 'Save' : 'حفظ'),
@@ -899,21 +1128,25 @@ child: imageBase64 != null
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () {
+            onPressed: () async {
+              final userId = FirebaseAuth.instance.currentUser?.uid ?? '';
               Navigator.pop(context);
               setState(() {
                 contacts.removeAt(index);
               });
-              _persistContacts();
+              await _contactsRef
+                  .child(userId)
+                  .child(removedContact.id)
+                  .remove();
               _showUndoSnackBar(
                 message: widget.isEnglish
                     ? 'Contact deleted'
                     : 'تم حذف جهة الاتصال',
-                onUndo: () {
+                onUndo: () async {
                   setState(() {
                     contacts.insert(index, removedContact);
                   });
-                  _persistContacts();
+                  await _persistContacts();
                 },
               );
             },
@@ -1004,7 +1237,6 @@ child: imageBase64 != null
       );
     }
 
-    // Search and filter
     final searchQuery = _searchController.text.toLowerCase();
     final filteredItems = items.where((item) {
       final matchesSearch = item.title.toLowerCase().contains(searchQuery);
@@ -1016,7 +1248,6 @@ child: imageBase64 != null
 
     return Column(
       children: [
-        // Search bar
         Padding(
           padding: const EdgeInsets.all(16.0),
           child: TextField(
@@ -1034,8 +1265,6 @@ child: imageBase64 != null
             ),
           ),
         ),
-
-        // Categories
         SizedBox(
           height: 50,
           child: ListView.builder(
@@ -1058,8 +1287,6 @@ child: imageBase64 != null
             },
           ),
         ),
-
-        // Total cost
         Padding(
           padding: const EdgeInsets.all(16),
           child: Container(
@@ -1088,8 +1315,6 @@ child: imageBase64 != null
             ),
           ),
         ),
-
-        // Devices list
         Expanded(
           child: filteredItems.isEmpty
               ? _buildEmptyState(
@@ -1117,7 +1342,6 @@ child: imageBase64 != null
                               : 'مستقر (متبقي $days يوم)');
                     Color statusColor = days <= 3 ? Colors.red : Colors.green;
 
-                    // Find original index
                     final originalIndex = items.indexOf(item);
 
                     return Padding(
@@ -1137,7 +1361,6 @@ child: imageBase64 != null
                             padding: const EdgeInsets.all(16.0),
                             child: Row(
                               children: [
-                                // صورة الجهاز أو أيقونة
                                 item.imageBase64 != null
                                     ? Container(
                                         width: 80,
@@ -1328,7 +1551,6 @@ child: imageBase64 != null
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // Dark Mode Toggle
         SwitchListTile(
           title: Text(
             widget.isEnglish ? 'Dark Mode' : 'الوضع الداكن',
@@ -1342,8 +1564,6 @@ child: imageBase64 != null
           onChanged: widget.onThemeChanged,
         ),
         const Divider(),
-
-        // Language Toggle
         SwitchListTile(
           title: Text(
             widget.isEnglish ? 'English Language' : 'اللغة الإنجليزية',
@@ -1357,36 +1577,21 @@ child: imageBase64 != null
           onChanged: widget.onLanguageChanged,
         ),
         const Divider(),
-
-        // App Info
-        Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                widget.isEnglish ? 'About This App' : 'حول هذا التطبيق',
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                widget.isEnglish
-                    ? 'Home Maintenance App v1.4.0'
-                    : 'تطبيق صيانة البيت v1.4.0',
-                style: TextStyle(color: Colors.grey[600]),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                widget.isEnglish
-                    ? 'Track your home maintenance easily and efficiently with photos'
-                    : 'تابع صيانة بيتك بسهولة وكفاءة مع الصور',
-                style: TextStyle(color: Colors.grey[600], fontSize: 12),
-              ),
-            ],
+        ListTile(
+          leading: const Icon(Icons.logout, color: Colors.red),
+          title: Text(
+            widget.isEnglish ? 'Sign Out' : 'تسجيل الخروج',
+            style: const TextStyle(
+              color: Colors.red,
+              fontWeight: FontWeight.bold,
+            ),
           ),
+          onTap: () async {
+            await FirebaseAuth.instance.signOut();
+            if (mounted) {
+              Navigator.of(context).pushReplacementNamed('/');
+            }
+          },
         ),
       ],
     );
