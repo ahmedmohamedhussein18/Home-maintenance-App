@@ -9,6 +9,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'firebase_options.dart';
+import 'login_screen.dart';
+import 'maps_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -117,195 +119,6 @@ class _HomeMaintenanceAppState extends State<HomeMaintenanceApp> {
                   },
                 );
         },
-      ),
-    );
-  }
-}
-
-// ---------------------- LOGIN SCREEN ----------------------
-
-class LoginScreen extends StatefulWidget {
-  final bool isEnglish;
-  final bool isDarkMode;
-  final ValueChanged<bool> onLanguageChanged;
-  final ValueChanged<bool> onThemeChanged;
-
-  const LoginScreen({
-    super.key,
-    required this.isEnglish,
-    required this.isDarkMode,
-    required this.onLanguageChanged,
-    required this.onThemeChanged,
-  });
-
-  @override
-  State<LoginScreen> createState() => _LoginScreenState();
-}
-
-class _LoginScreenState extends State<LoginScreen> {
-  late TextEditingController _emailController;
-  late TextEditingController _passwordController;
-  bool _isLoading = false;
-  String? _errorMessage;
-  bool _isLoginMode = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _emailController = TextEditingController();
-    _passwordController = TextEditingController();
-  }
-
-  @override
-  void dispose() {
-    _emailController.dispose();
-    _passwordController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _authenticate() async {
-    final email = _emailController.text.trim();
-    final password = _passwordController.text.trim();
-
-    if (email.isEmpty || password.isEmpty) {
-      setState(() {
-        _errorMessage = widget.isEnglish
-            ? 'Please fill all fields'
-            : 'من فضلك املأ جميع الحقول';
-      });
-      return;
-    }
-
-    setState(() => _isLoading = true);
-
-    try {
-      if (_isLoginMode) {
-        await FirebaseAuth.instance.signInWithEmailAndPassword(
-          email: email,
-          password: password,
-        );
-      } else {
-        await FirebaseAuth.instance.createUserWithEmailAndPassword(
-          email: email,
-          password: password,
-        );
-      }
-      setState(() => _errorMessage = null);
-    } on FirebaseAuthException catch (e) {
-      setState(() {
-        _errorMessage = widget.isEnglish
-            ? e.message ?? 'Auth failed'
-            : 'فشل التحقق';
-      });
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.isEnglish ? 'Home Maintenance' : 'صيانة البيت'),
-        actions: [
-          IconButton(
-            icon: Icon(widget.isDarkMode ? Icons.light_mode : Icons.dark_mode),
-            onPressed: () => widget.onThemeChanged(!widget.isDarkMode),
-          ),
-          IconButton(
-            icon: const Icon(Icons.language),
-            onPressed: () => widget.onLanguageChanged(!widget.isEnglish),
-          ),
-        ],
-      ),
-      body: Center(
-        child: SingleChildScrollView(
-          child: Padding(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.home_repair_service, size: 80, color: Colors.blue),
-                const SizedBox(height: 32),
-                Text(
-                  _isLoginMode
-                      ? (widget.isEnglish ? 'Sign In' : 'تسجيل الدخول')
-                      : (widget.isEnglish ? 'Create Account' : 'إنشاء حساب'),
-                  style: const TextStyle(
-                    fontSize: 28,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 32),
-                TextField(
-                  controller: _emailController,
-                  decoration: InputDecoration(
-                    labelText: widget.isEnglish ? 'Email' : 'البريد الإلكتروني',
-                    prefixIcon: const Icon(Icons.email),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  keyboardType: TextInputType.emailAddress,
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _passwordController,
-                  decoration: InputDecoration(
-                    labelText: widget.isEnglish ? 'Password' : 'كلمة المرور',
-                    prefixIcon: const Icon(Icons.lock),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  obscureText: true,
-                ),
-                const SizedBox(height: 16),
-                if (_errorMessage != null)
-                  Text(
-                    _errorMessage!,
-                    style: const TextStyle(color: Colors.red, fontSize: 14),
-                  ),
-                const SizedBox(height: 24),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: _isLoading ? null : _authenticate,
-                    child: _isLoading
-                        ? const CircularProgressIndicator()
-                        : Text(
-                            _isLoginMode
-                                ? (widget.isEnglish
-                                      ? 'Sign In'
-                                      : 'تسجيل الدخول')
-                                : (widget.isEnglish
-                                      ? 'Create Account'
-                                      : 'إنشاء حساب'),
-                          ),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                TextButton(
-                  onPressed: () {
-                    setState(() {
-                      _isLoginMode = !_isLoginMode;
-                      _errorMessage = null;
-                    });
-                  },
-                  child: Text(
-                    _isLoginMode
-                        ? (widget.isEnglish
-                              ? "Don't have an account? Sign up"
-                              : "ليس لديك حساب؟ أنشئ واحداً")
-                        : (widget.isEnglish
-                              ? "Already have an account? Sign in"
-                              : "هل لديك حساب؟ تسجيل الدخول"),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
       ),
     );
   }
@@ -1170,6 +983,7 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
 
     final List<Widget> pages = [
       _buildDevicesPage(totalCost),
+      MapsScreen(isEnglish: widget.isEnglish),
       _buildEmergencyPage(),
       _buildSettingsPage(),
     ];
@@ -1180,10 +994,12 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
           _currentIndex == 0
               ? (widget.isEnglish ? 'Maintenance Log' : 'سجل الصيانة والأجهزة')
               : (_currentIndex == 1
-                    ? (widget.isEnglish
-                          ? 'Emergency Contacts'
-                          : 'طوارئ الصيانة السريعة')
-                    : (widget.isEnglish ? 'Settings' : 'الإعدادات')),
+                    ? (widget.isEnglish ? 'Find Technician' : 'ابحث عن فني')
+                    : (_currentIndex == 2
+                          ? (widget.isEnglish
+                                ? 'Emergency Contacts'
+                                : 'طوارئ الصيانة السريعة')
+                          : (widget.isEnglish ? 'Settings' : 'الإعدادات'))),
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         centerTitle: true,
@@ -1196,7 +1012,7 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
               icon: const Icon(Icons.add),
               label: Text(widget.isEnglish ? 'Add Device' : 'إضافة جهاز'),
             )
-          : (_currentIndex == 1
+          : (_currentIndex == 2
                 ? FloatingActionButton.extended(
                     onPressed: () => _showContactDialog(),
                     icon: const Icon(Icons.person_add),
@@ -1212,6 +1028,10 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
           NavigationDestination(
             icon: const Icon(Icons.home),
             label: widget.isEnglish ? 'Devices' : 'الأجهزة',
+          ),
+          NavigationDestination(
+            icon: const Icon(Icons.map),
+            label: widget.isEnglish ? 'Find Technician' : 'ابحث عن فني',
           ),
           NavigationDestination(
             icon: const Icon(Icons.phone_in_talk),
