@@ -299,6 +299,8 @@ class _MapsScreenState extends State<MapsScreen> {
               'longitude': _currentLocation?.longitude,
             },
             'createdAt': DateTime.now().millisecondsSinceEpoch,
+            'seenByTechnician': false,
+            'seenByUser': false,
           });
 
       if (mounted) {

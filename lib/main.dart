@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'firebase_options.dart';
 import 'login_screen.dart';
 import 'maps_screen.dart';
+import 'service_requests_screen.dart';
 import 'technician_profile_screen.dart';
 
 void main() async {
@@ -420,6 +421,9 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
   final DatabaseReference _contactsRef = FirebaseDatabase.instance.ref(
     'contacts',
   );
+  final DatabaseReference _requestsRef = FirebaseDatabase.instance.ref(
+    'service_requests',
+  );
 
   @override
   void initState() {
@@ -443,6 +447,36 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
       }
     } catch (e) {
       // Non-fatal: profile link simply stays hidden.
+    }
+  }
+
+  Future<void> _markRequestsSeen() async {
+    final userId = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (userId.isEmpty) return;
+    final isTechnician = _userType == 'technician';
+
+    try {
+      final snapshot = await _requestsRef.get();
+      if (!snapshot.exists) return;
+      final data = snapshot.value as Map;
+
+      data.forEach((key, value) {
+        final map = Map<String, dynamic>.from(value as Map);
+        final matches = isTechnician
+            ? (map['technicianId'] == userId &&
+                  map['status'] == 'pending' &&
+                  map['seenByTechnician'] != true)
+            : (map['userId'] == userId &&
+                  map['status'] != 'pending' &&
+                  map['seenByUser'] != true);
+        if (matches) {
+          _requestsRef.child(key).update({
+            isTechnician ? 'seenByTechnician' : 'seenByUser': true,
+          });
+        }
+      });
+    } catch (e) {
+      // Non-fatal.
     }
   }
 
@@ -1004,6 +1038,7 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
     final List<Widget> pages = [
       _buildDevicesPage(totalCost),
       MapsScreen(isEnglish: widget.isEnglish),
+      ServiceRequestsScreen(isEnglish: widget.isEnglish, userType: _userType),
       _buildEmergencyPage(),
       _buildSettingsPage(),
     ];
@@ -1020,10 +1055,14 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
                                 ? 'Find Technician'
                                 : 'ابحث عن فني'))
                     : (_currentIndex == 2
-                          ? (widget.isEnglish
-                                ? 'Emergency Contacts'
-                                : 'طوارئ الصيانة السريعة')
-                          : (widget.isEnglish ? 'Settings' : 'الإعدادات'))),
+                          ? (widget.isEnglish ? 'Requests' : 'الطلبات')
+                          : (_currentIndex == 3
+                                ? (widget.isEnglish
+                                      ? 'Emergency Contacts'
+                                      : 'طوارئ الصيانة السريعة')
+                                : (widget.isEnglish
+                                      ? 'Settings'
+                                      : 'الإعدادات')))),
           style: const TextStyle(fontWeight: FontWeight.bold),
         ),
         centerTitle: true,
@@ -1036,7 +1075,7 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
               icon: const Icon(Icons.add),
               label: Text(widget.isEnglish ? 'Add Device' : 'إضافة جهاز'),
             )
-          : (_currentIndex == 2
+          : (_currentIndex == 3
                 ? FloatingActionButton.extended(
                     onPressed: () => _showContactDialog(),
                     icon: const Icon(Icons.person_add),
@@ -1047,7 +1086,10 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
                 : null),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
-        onDestinationSelected: (index) => setState(() => _currentIndex = index),
+        onDestinationSelected: (index) {
+          setState(() => _currentIndex = index);
+          if (index == 2) _markRequestsSeen();
+        },
         destinations: [
           NavigationDestination(
             icon: const Icon(Icons.home),
@@ -1056,6 +1098,36 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
           NavigationDestination(
             icon: const Icon(Icons.map),
             label: widget.isEnglish ? 'Find Technician' : 'ابحث عن فني',
+          ),
+          NavigationDestination(
+            icon: StreamBuilder<DatabaseEvent>(
+              stream: _requestsRef.onValue,
+              builder: (context, snapshot) {
+                final userId = FirebaseAuth.instance.currentUser?.uid ?? '';
+                final isTechnician = _userType == 'technician';
+                int unread = 0;
+                final data = snapshot.data?.snapshot.value;
+                if (data is Map) {
+                  data.forEach((key, value) {
+                    final map = Map<String, dynamic>.from(value as Map);
+                    final matches = isTechnician
+                        ? (map['technicianId'] == userId &&
+                              map['status'] == 'pending' &&
+                              map['seenByTechnician'] != true)
+                        : (map['userId'] == userId &&
+                              map['status'] != 'pending' &&
+                              map['seenByUser'] != true);
+                    if (matches) unread++;
+                  });
+                }
+                return Badge(
+                  isLabelVisible: unread > 0,
+                  label: Text('$unread'),
+                  child: const Icon(Icons.assignment),
+                );
+              },
+            ),
+            label: widget.isEnglish ? 'Requests' : 'الطلبات',
           ),
           NavigationDestination(
             icon: const Icon(Icons.phone_in_talk),
