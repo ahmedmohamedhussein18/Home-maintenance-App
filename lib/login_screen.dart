@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 
-import 'user_model.dart';
-
 class LoginScreen extends StatefulWidget {
   final bool isEnglish;
   final bool isDarkMode;
@@ -25,8 +23,10 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   late TextEditingController _emailController;
   late TextEditingController _passwordController;
+  late TextEditingController _phoneController;
   bool _isLoading = false;
   String? _errorMessage;
+  String? _infoMessage;
   bool _isLoginMode = true;
   String _selectedUserType = 'user';
 
@@ -35,12 +35,14 @@ class _LoginScreenState extends State<LoginScreen> {
     super.initState();
     _emailController = TextEditingController();
     _passwordController = TextEditingController();
+    _phoneController = TextEditingController();
   }
 
   @override
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
+    _phoneController.dispose();
     super.dispose();
   }
 
@@ -57,7 +59,20 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    setState(() => _isLoading = true);
+    if (!_isLoginMode && _phoneController.text.trim().isEmpty) {
+      setState(() {
+        _errorMessage = widget.isEnglish
+            ? 'Please enter your phone number'
+            : 'من فضلك أدخل رقم هاتفك';
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+      _infoMessage = null;
+    });
 
     try {
       UserCredential userCredential;
@@ -75,6 +90,7 @@ class _LoginScreenState extends State<LoginScreen> {
         await FirebaseDatabase.instance.ref('users').child(userId).set({
           'uid': userId,
           'email': email,
+          'phone': _phoneController.text.trim(),
           'userType': _selectedUserType,
         });
       }
@@ -85,6 +101,43 @@ class _LoginScreenState extends State<LoginScreen> {
         _errorMessage = widget.isEnglish
             ? e.message ?? 'Auth failed'
             : 'فشل التحقق';
+      });
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _resetPassword() async {
+    final email = _emailController.text.trim();
+
+    if (email.isEmpty) {
+      setState(() {
+        _errorMessage = widget.isEnglish
+            ? 'Enter your email above first, then tap "Forgot password?"'
+            : 'اكتبي إيميلك فوق الأول، وبعدين دوسي "نسيت كلمة المرور؟"';
+        _infoMessage = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+      _infoMessage = null;
+    });
+
+    try {
+      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+      setState(() {
+        _infoMessage = widget.isEnglish
+            ? 'A password reset link was sent to $email'
+            : 'تم إرسال رابط إعادة تعيين كلمة المرور إلى $email';
+      });
+    } on FirebaseAuthException catch (e) {
+      setState(() {
+        _errorMessage = widget.isEnglish
+            ? e.message ?? 'Failed to send reset email'
+            : 'فشل إرسال رابط الاسترجاع';
       });
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -226,7 +279,21 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 24),
+                  TextField(
+                    controller: _phoneController,
+                    keyboardType: TextInputType.phone,
+                    decoration: InputDecoration(
+                      labelText: widget.isEnglish
+                          ? 'Phone Number'
+                          : 'رقم الهاتف',
+                      prefixIcon: const Icon(Icons.phone),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
                 ],
 
                 TextField(
@@ -252,11 +319,29 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   obscureText: true,
                 ),
-                const SizedBox(height: 16),
+                if (_isLoginMode) ...[
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: _isLoading ? null : _resetPassword,
+                      child: Text(
+                        widget.isEnglish
+                            ? 'Forgot password?'
+                            : 'نسيت كلمة المرور؟',
+                      ),
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 8),
                 if (_errorMessage != null)
                   Text(
                     _errorMessage!,
                     style: const TextStyle(color: Colors.red, fontSize: 14),
+                  ),
+                if (_infoMessage != null)
+                  Text(
+                    _infoMessage!,
+                    style: const TextStyle(color: Colors.green, fontSize: 14),
                   ),
                 const SizedBox(height: 24),
                 SizedBox(
@@ -282,6 +367,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     setState(() {
                       _isLoginMode = !_isLoginMode;
                       _errorMessage = null;
+                      _infoMessage = null;
                     });
                   },
                   child: Text(

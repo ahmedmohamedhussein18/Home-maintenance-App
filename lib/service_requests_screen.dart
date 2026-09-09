@@ -21,6 +21,7 @@ class _ServiceRequestsScreenState extends State<ServiceRequestsScreen> {
   final DatabaseReference _requestsRef = FirebaseDatabase.instance.ref(
     'service_requests',
   );
+  bool _showTrash = false;
 
   Future<void> _updateStatus(String requestId, String newStatus) async {
     await _requestsRef.child(requestId).update({
@@ -33,12 +34,111 @@ class _ServiceRequestsScreenState extends State<ServiceRequestsScreen> {
     await _requestsRef.child(requestId).update({'status': 'cancelled'});
   }
 
+  Future<void> _deleteRequest(String requestId) async {
+    await _requestsRef.child(requestId).remove();
+  }
+
+  Future<void> _emptyTrash(List<Map<String, dynamic>> trashedItems) async {
+    for (final item in trashedItems) {
+      await _requestsRef.child(item['requestId']).remove();
+    }
+  }
+
   Future<void> _callNumber(String? phone) async {
     if (phone == null || phone.isEmpty || phone == 'N/A') return;
     final Uri uri = Uri(scheme: 'tel', path: phone);
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri);
     }
+  }
+
+  Future<void> _submitRating(
+    String requestId,
+    String technicianId,
+    int stars,
+  ) async {
+    final techRef = FirebaseDatabase.instance.ref('users').child(technicianId);
+    final snapshot = await techRef.get();
+    double currentRating = 0.0;
+    int currentCount = 0;
+    if (snapshot.exists) {
+      final data = snapshot.value as Map;
+      currentRating = (data['rating'] as num?)?.toDouble() ?? 0.0;
+      currentCount = (data['ratingCount'] as num?)?.toInt() ?? 0;
+    }
+
+    final newCount = currentCount + 1;
+    final newRating = ((currentRating * currentCount) + stars) / newCount;
+
+    await techRef.update({
+      'rating': double.parse(newRating.toStringAsFixed(2)),
+      'ratingCount': newCount,
+    });
+
+    await _requestsRef.child(requestId).update({'rated': true});
+  }
+
+  void _showRatingDialog(Map<String, dynamic> req) {
+    int selectedStars = 5;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: Text(
+              widget.isEnglish ? 'Rate the Technician' : 'قيّم الفني',
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  widget.isEnglish
+                      ? 'How was your experience with ${req['technicianName']}?'
+                      : 'إيه رأيك في تجربتك مع ${req['technicianName']}؟',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(5, (i) {
+                    final starValue = i + 1;
+                    return IconButton(
+                      onPressed: () =>
+                          setDialogState(() => selectedStars = starValue),
+                      icon: Icon(
+                        starValue <= selectedStars
+                            ? Icons.star
+                            : Icons.star_border,
+                        color: Colors.amber,
+                        size: 32,
+                      ),
+                    );
+                  }),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: Text(widget.isEnglish ? 'Skip' : 'تخطي'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  await _submitRating(
+                    req['requestId'],
+                    req['technicianId'],
+                    selectedStars,
+                  );
+                  if (context.mounted) Navigator.pop(context);
+                },
+                child: Text(widget.isEnglish ? 'Submit' : 'إرسال'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   String _statusLabel(String status) {
@@ -109,210 +209,414 @@ class _ServiceRequestsScreenState extends State<ServiceRequestsScreen> {
           return bTime.compareTo(aTime);
         });
 
-        if (myRequests.isEmpty) {
-          return Center(
-            child: Padding(
-              padding: const EdgeInsets.all(32.0),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+        const finishedStatuses = ['declined', 'completed', 'cancelled'];
+        final activeRequests = myRequests
+            .where((r) => !finishedStatuses.contains(r['status']))
+            .toList();
+        final trashedRequests = myRequests
+            .where((r) => finishedStatuses.contains(r['status']))
+            .toList();
+
+        final visibleRequests = _showTrash ? trashedRequests : activeRequests;
+
+        return Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+              child: Row(
                 children: [
-                  Icon(
-                    Icons.assignment_outlined,
-                    size: 72,
-                    color: Colors.grey[400],
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    isTechnician
-                        ? (widget.isEnglish
-                              ? 'No requests yet'
-                              : 'مفيش طلبات لسه')
-                        : (widget.isEnglish
-                              ? 'No service requests yet'
-                              : 'مفيش طلبات خدمة لسه'),
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
+                  Expanded(
+                    child: ChoiceChip(
+                      label: Text(
+                        '${widget.isEnglish ? 'Active' : 'نشطة'} (${activeRequests.length})',
+                      ),
+                      selected: !_showTrash,
+                      onSelected: (_) => setState(() => _showTrash = false),
                     ),
-                    textAlign: TextAlign.center,
                   ),
-                  const SizedBox(height: 8),
-                  Text(
-                    isTechnician
-                        ? (widget.isEnglish
-                              ? 'Requests from users will appear here'
-                              : 'طلبات المستخدمين هتظهر هنا')
-                        : (widget.isEnglish
-                              ? 'Requests you send to technicians will appear here'
-                              : 'الطلبات اللي هتبعتيها للفنيين هتظهر هنا'),
-                    style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                    textAlign: TextAlign.center,
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ChoiceChip(
+                      label: Text(
+                        '🗑️ ${widget.isEnglish ? 'Trash' : 'سلة المهملات'} (${trashedRequests.length})',
+                      ),
+                      selected: _showTrash,
+                      onSelected: (_) => setState(() => _showTrash = true),
+                    ),
                   ),
                 ],
               ),
             ),
-          );
-        }
-
-        return ListView.builder(
-          padding: const EdgeInsets.all(16),
-          itemCount: myRequests.length,
-          itemBuilder: (context, index) {
-            final req = myRequests[index];
-            final status = req['status'] as String? ?? 'pending';
-
-            return Card(
-              margin: const EdgeInsets.only(bottom: 12),
-              elevation: 2,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Row(
-                          children: [
-                            Text(
-                              req['serviceIcon'] ?? '🔧',
-                              style: const TextStyle(fontSize: 22),
+            if (_showTrash && trashedRequests.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: () async {
+                      final confirmed = await showDialog<bool>(
+                        context: context,
+                        builder: (context) => AlertDialog(
+                          title: Text(
+                            widget.isEnglish
+                                ? 'Empty Trash?'
+                                : 'إفراغ سلة المهملات؟',
+                          ),
+                          content: Text(
+                            widget.isEnglish
+                                ? 'This will permanently delete ${trashedRequests.length} request(s).'
+                                : 'هيتم حذف ${trashedRequests.length} طلب نهائيًا.',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(context, false),
+                              child: Text(
+                                widget.isEnglish ? 'Cancel' : 'إلغاء',
+                              ),
                             ),
-                            const SizedBox(width: 8),
-                            Text(
-                              req['serviceName'] ??
-                                  (widget.isEnglish ? 'Service' : 'خدمة'),
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
+                            ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.red,
+                              ),
+                              onPressed: () => Navigator.pop(context, true),
+                              child: Text(
+                                widget.isEnglish ? 'Delete All' : 'حذف الكل',
+                                style: const TextStyle(color: Colors.white),
                               ),
                             ),
                           ],
                         ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: _statusColor(status).withOpacity(0.12),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            _statusLabel(status),
-                            style: TextStyle(
-                              color: _statusColor(status),
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                      ],
+                      );
+                      if (confirmed == true) {
+                        await _emptyTrash(trashedRequests);
+                      }
+                    },
+                    icon: const Icon(
+                      Icons.delete_forever,
+                      size: 18,
+                      color: Colors.red,
                     ),
-                    const SizedBox(height: 12),
-                    if (isTechnician) ...[
-                      Text(
-                        widget.isEnglish
-                            ? 'Requested by a customer'
-                            : 'طلب من عميل',
-                        style: TextStyle(color: Colors.grey[600], fontSize: 13),
-                      ),
-                    ] else ...[
-                      Text(
-                        '${widget.isEnglish ? 'Technician: ' : 'الفني: '}${req['technicianName'] ?? ''}',
-                        style: const TextStyle(fontSize: 14),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        '📱 ${req['technicianPhone'] ?? ''}',
-                        style: TextStyle(color: Colors.grey[600], fontSize: 13),
-                      ),
-                    ],
-                    const SizedBox(height: 12),
-                    if (isTechnician && status == 'pending') ...[
-                      Row(
-                        children: [
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              onPressed: () =>
-                                  _updateStatus(req['requestId'], 'accepted'),
-                              icon: const Icon(Icons.check, size: 18),
-                              label: Text(widget.isEnglish ? 'Accept' : 'قبول'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.green,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              onPressed: () =>
-                                  _updateStatus(req['requestId'], 'declined'),
-                              icon: const Icon(Icons.close, size: 18),
-                              label: Text(widget.isEnglish ? 'Decline' : 'رفض'),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.red,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ] else if (isTechnician && status == 'accepted') ...[
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed: () =>
-                              _updateStatus(req['requestId'], 'completed'),
-                          icon: const Icon(Icons.done_all, size: 18),
-                          label: Text(
-                            widget.isEnglish
-                                ? 'Mark as Completed'
-                                : 'تعليم كمنجز',
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue,
-                          ),
-                        ),
-                      ),
-                    ] else if (!isTechnician && status == 'pending') ...[
-                      SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton.icon(
-                          onPressed: () => _cancelRequest(req['requestId']),
-                          icon: const Icon(Icons.close, size: 18),
-                          label: Text(
-                            widget.isEnglish ? 'Cancel Request' : 'إلغاء الطلب',
-                          ),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.red,
-                          ),
-                        ),
-                      ),
-                    ] else if (!isTechnician && status == 'accepted') ...[
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton.icon(
-                          onPressed: () => _callNumber(req['technicianPhone']),
-                          icon: const Icon(Icons.phone, size: 18),
-                          label: Text(
-                            widget.isEnglish
-                                ? 'Call Technician'
-                                : 'اتصال بالفني',
-                          ),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.green,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
+                    label: Text(
+                      widget.isEnglish ? 'Empty Trash' : 'إفراغ السلة',
+                      style: const TextStyle(color: Colors.red),
+                    ),
+                  ),
                 ),
               ),
-            );
-          },
+            Expanded(
+              child: visibleRequests.isEmpty
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(32.0),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              _showTrash
+                                  ? Icons.delete_outline
+                                  : Icons.assignment_outlined,
+                              size: 72,
+                              color: Colors.grey[400],
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              _showTrash
+                                  ? (widget.isEnglish
+                                        ? 'Trash is empty'
+                                        : 'سلة المهملات فاضية')
+                                  : (isTechnician
+                                        ? (widget.isEnglish
+                                              ? 'No active requests'
+                                              : 'مفيش طلبات نشطة')
+                                        : (widget.isEnglish
+                                              ? 'No active requests'
+                                              : 'مفيش طلبات نشطة')),
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                            if (!_showTrash) ...[
+                              const SizedBox(height: 8),
+                              Text(
+                                isTechnician
+                                    ? (widget.isEnglish
+                                          ? 'New requests from users will appear here'
+                                          : 'طلبات المستخدمين الجديدة هتظهر هنا')
+                                    : (widget.isEnglish
+                                          ? 'Requests you send will appear here'
+                                          : 'الطلبات اللي هتبعتيها هتظهر هنا'),
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: Colors.grey[600],
+                                ),
+                                textAlign: TextAlign.center,
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: visibleRequests.length,
+                      itemBuilder: (context, index) {
+                        final req = visibleRequests[index];
+                        final status = req['status'] as String? ?? 'pending';
+
+                        return Card(
+                          margin: const EdgeInsets.only(bottom: 12),
+                          elevation: 2,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Row(
+                                      children: [
+                                        Text(
+                                          req['serviceIcon'] ?? '🔧',
+                                          style: const TextStyle(fontSize: 22),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          req['serviceName'] ??
+                                              (widget.isEnglish
+                                                  ? 'Service'
+                                                  : 'خدمة'),
+                                          style: const TextStyle(
+                                            fontSize: 16,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 4,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: _statusColor(status)
+                                            .withOpacity(0.12),
+                                        borderRadius: BorderRadius.circular(20),
+                                      ),
+                                      child: Text(
+                                        _statusLabel(status),
+                                        style: TextStyle(
+                                          color: _statusColor(status),
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 12),
+                                if (isTechnician) ...[
+                                  Text(
+                                    widget.isEnglish
+                                        ? 'Requested by a customer'
+                                        : 'طلب من عميل',
+                                    style: TextStyle(
+                                      color: Colors.grey[600],
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ] else ...[
+                                  Text(
+                                    '${widget.isEnglish ? 'Technician: ' : 'الفني: '}${req['technicianName'] ?? ''}',
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '📱 ${req['technicianPhone'] ?? ''}',
+                                    style: TextStyle(
+                                      color: Colors.grey[600],
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ],
+                                const SizedBox(height: 12),
+                                if (isTechnician && status == 'pending') ...[
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: ElevatedButton.icon(
+                                          onPressed: () => _updateStatus(
+                                            req['requestId'],
+                                            'accepted',
+                                          ),
+                                          icon: const Icon(
+                                            Icons.check,
+                                            size: 18,
+                                          ),
+                                          label: Text(
+                                            widget.isEnglish
+                                                ? 'Accept'
+                                                : 'قبول',
+                                          ),
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: Colors.green,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: ElevatedButton.icon(
+                                          onPressed: () => _updateStatus(
+                                            req['requestId'],
+                                            'declined',
+                                          ),
+                                          icon: const Icon(
+                                            Icons.close,
+                                            size: 18,
+                                          ),
+                                          label: Text(
+                                            widget.isEnglish
+                                                ? 'Decline'
+                                                : 'رفض',
+                                          ),
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: Colors.red,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ] else if (isTechnician &&
+                                    status == 'accepted') ...[
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: OutlinedButton.icon(
+                                          onPressed: () =>
+                                              _callNumber(req['userPhone']),
+                                          icon: const Icon(
+                                            Icons.phone,
+                                            size: 18,
+                                          ),
+                                          label: Text(
+                                            widget.isEnglish
+                                                ? 'Call Customer'
+                                                : 'اتصال بالعميل',
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: ElevatedButton.icon(
+                                          onPressed: () => _updateStatus(
+                                            req['requestId'],
+                                            'completed',
+                                          ),
+                                          icon: const Icon(
+                                            Icons.done_all,
+                                            size: 18,
+                                          ),
+                                          label: Text(
+                                            widget.isEnglish
+                                                ? 'Complete'
+                                                : 'إنهاء',
+                                          ),
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: Colors.blue,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ] else if (!isTechnician &&
+                                    status == 'pending') ...[
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: OutlinedButton.icon(
+                                      onPressed: () =>
+                                          _cancelRequest(req['requestId']),
+                                      icon: const Icon(Icons.close, size: 18),
+                                      label: Text(
+                                        widget.isEnglish
+                                            ? 'Cancel Request'
+                                            : 'إلغاء الطلب',
+                                      ),
+                                      style: OutlinedButton.styleFrom(
+                                        foregroundColor: Colors.red,
+                                      ),
+                                    ),
+                                  ),
+                                ] else if (!isTechnician &&
+                                    status == 'accepted') ...[
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: ElevatedButton.icon(
+                                      onPressed: () =>
+                                          _callNumber(req['technicianPhone']),
+                                      icon: const Icon(Icons.phone, size: 18),
+                                      label: Text(
+                                        widget.isEnglish
+                                            ? 'Call Technician'
+                                            : 'اتصال بالفني',
+                                      ),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.green,
+                                      ),
+                                    ),
+                                  ),
+                                ] else if (!isTechnician &&
+                                    status == 'completed' &&
+                                    req['rated'] != true) ...[
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: ElevatedButton.icon(
+                                      onPressed: () => _showRatingDialog(req),
+                                      icon: const Icon(Icons.star, size: 18),
+                                      label: Text(
+                                        widget.isEnglish
+                                            ? 'Rate Technician'
+                                            : 'قيّم الفني',
+                                      ),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor: Colors.amber[700],
+                                      ),
+                                    ),
+                                  ),
+                                ] else if (_showTrash) ...[
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: OutlinedButton.icon(
+                                      onPressed: () =>
+                                          _deleteRequest(req['requestId']),
+                                      icon: const Icon(
+                                        Icons.delete_forever,
+                                        size: 18,
+                                      ),
+                                      label: Text(
+                                        widget.isEnglish
+                                            ? 'Delete Permanently'
+                                            : 'حذف نهائي',
+                                      ),
+                                      style: OutlinedButton.styleFrom(
+                                        foregroundColor: Colors.red,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
         );
       },
     );

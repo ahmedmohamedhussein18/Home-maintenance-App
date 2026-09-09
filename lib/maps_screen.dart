@@ -180,15 +180,19 @@ class _MapsScreenState extends State<MapsScreen> {
 
         data.forEach((key, value) {
           final user = value as Map;
-          if (user['userType'] == 'technician') {
+          final name = (user['name'] as String?)?.trim() ?? '';
+          final specs = List<String>.from(
+            (user['specializations'] as List?) ?? [],
+          );
+          final hasCompletedProfile = name.isNotEmpty && specs.isNotEmpty;
+
+          if (user['userType'] == 'technician' && hasCompletedProfile) {
             techs.add({
               'id': key,
-              'name': user['name'] ?? 'Technician',
+              'name': name,
               'email': user['email'],
               'phone': user['phone'] ?? 'N/A',
-              'specializations': List<String>.from(
-                (user['specializations'] as List?) ?? [],
-              ),
+              'specializations': specs,
               'latitude': (user['latitude'] as num?)?.toDouble() ?? 30.0,
               'longitude': (user['longitude'] as num?)?.toDouble() ?? 31.0,
               'rating': user['rating'] ?? 0.0,
@@ -290,12 +294,27 @@ class _MapsScreenState extends State<MapsScreen> {
       final userId = FirebaseAuth.instance.currentUser?.uid;
       final requestId = '${DateTime.now().millisecondsSinceEpoch}';
 
+      String userPhone = 'N/A';
+      String userEmail = FirebaseAuth.instance.currentUser?.email ?? '';
+      if (userId != null) {
+        final userSnapshot = await FirebaseDatabase.instance
+            .ref('users')
+            .child(userId)
+            .get();
+        if (userSnapshot.exists) {
+          final userData = userSnapshot.value as Map;
+          userPhone = userData['phone'] as String? ?? 'N/A';
+        }
+      }
+
       await FirebaseDatabase.instance
           .ref('service_requests')
           .child(requestId)
           .set({
             'requestId': requestId,
             'userId': userId,
+            'userPhone': userPhone,
+            'userEmail': userEmail,
             'technicianId': tech['id'],
             'technicianName': tech['name'],
             'technicianPhone': tech['phone'],
