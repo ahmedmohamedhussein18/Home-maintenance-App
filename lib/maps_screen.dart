@@ -37,6 +37,14 @@ class _MapsScreenState extends State<MapsScreen> {
     {'id': 'other', 'en': 'Other', 'ar': 'أخرى', 'icon': '🔧'},
   ];
 
+  String _specializationLabel(String id) {
+    final match = serviceTypes.firstWhere(
+      (s) => s['id'] == id,
+      orElse: () => {'en': id, 'ar': id, 'icon': '🔧'},
+    );
+    return '${match['icon']} ${widget.isEnglish ? match['en'] : match['ar']}';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -178,7 +186,9 @@ class _MapsScreenState extends State<MapsScreen> {
               'name': user['name'] ?? 'Technician',
               'email': user['email'],
               'phone': user['phone'] ?? 'N/A',
-              'specializations': user['specializations'] ?? [],
+              'specializations': List<String>.from(
+                (user['specializations'] as List?) ?? [],
+              ),
               'latitude': (user['latitude'] as num?)?.toDouble() ?? 30.0,
               'longitude': (user['longitude'] as num?)?.toDouble() ?? 31.0,
               'rating': user['rating'] ?? 0.0,
@@ -538,6 +548,40 @@ class _MapsScreenState extends State<MapsScreen> {
                                       color: Colors.blue,
                                     ),
                                   ),
+                                  if ((tech['specializations'] as List)
+                                      .isNotEmpty) ...[
+                                    const SizedBox(height: 4),
+                                    Wrap(
+                                      spacing: 4,
+                                      runSpacing: 4,
+                                      children: (tech['specializations'] as List)
+                                          .map(
+                                            (specId) => Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 6,
+                                                    vertical: 2,
+                                                  ),
+                                              decoration: BoxDecoration(
+                                                color: Colors.blue.withOpacity(
+                                                  0.1,
+                                                ),
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                              ),
+                                              child: Text(
+                                                _specializationLabel(
+                                                  specId as String,
+                                                ),
+                                                style: const TextStyle(
+                                                  fontSize: 11,
+                                                ),
+                                              ),
+                                            ),
+                                          )
+                                          .toList(),
+                                    ),
+                                  ],
                                 ],
                               ),
                               trailing: ElevatedButton(
