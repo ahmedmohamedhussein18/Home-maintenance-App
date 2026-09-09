@@ -11,6 +11,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'firebase_options.dart';
 import 'login_screen.dart';
 import 'maps_screen.dart';
+import 'technician_profile_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -407,6 +408,7 @@ class MaintenanceHomeScreen extends StatefulWidget {
 class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
   int _currentIndex = 0;
   bool _isLoading = true;
+  String? _userType;
 
   List<MaintenanceItem> items = [];
   List<EmergencyContact> contacts = [];
@@ -423,7 +425,25 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
   void initState() {
     super.initState();
     _loadData();
+    _loadUserType();
     _searchController = TextEditingController();
+  }
+
+  Future<void> _loadUserType() async {
+    final userId = FirebaseAuth.instance.currentUser?.uid;
+    if (userId == null) return;
+    try {
+      final snapshot = await FirebaseDatabase.instance
+          .ref('users')
+          .child(userId)
+          .child('userType')
+          .get();
+      if (snapshot.exists && mounted) {
+        setState(() => _userType = snapshot.value as String?);
+      }
+    } catch (e) {
+      // Non-fatal: profile link simply stays hidden.
+    }
   }
 
   @override
@@ -994,7 +1014,11 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
           _currentIndex == 0
               ? (widget.isEnglish ? 'Maintenance Log' : 'سجل الصيانة والأجهزة')
               : (_currentIndex == 1
-                    ? (widget.isEnglish ? 'Find Technician' : 'ابحث عن فني')
+                    ? (_userType == 'technician'
+                          ? (widget.isEnglish ? 'My Location' : 'موقعي')
+                          : (widget.isEnglish
+                                ? 'Find Technician'
+                                : 'ابحث عن فني'))
                     : (_currentIndex == 2
                           ? (widget.isEnglish
                                 ? 'Emergency Contacts'
@@ -1384,6 +1408,30 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
           onChanged: widget.onThemeChanged,
         ),
         const Divider(),
+        if (_userType == 'technician') ...[
+          ListTile(
+            leading: const Icon(Icons.engineering, color: Colors.blue),
+            title: Text(
+              widget.isEnglish ? 'Update My Profile' : 'تحديث ملفي',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            subtitle: Text(
+              widget.isEnglish
+                  ? 'Name, phone, and specializations'
+                  : 'الاسم والرقم والتخصصات',
+            ),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) =>
+                      TechnicianProfileScreen(isEnglish: widget.isEnglish),
+                ),
+              );
+            },
+          ),
+          const Divider(),
+        ],
         SwitchListTile(
           title: Text(
             widget.isEnglish ? 'English Language' : 'اللغة الإنجليزية',

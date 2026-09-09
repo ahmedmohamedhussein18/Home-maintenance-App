@@ -14,14 +14,15 @@ class MapsScreen extends StatefulWidget {
 }
 
 class _MapsScreenState extends State<MapsScreen> {
-  late GoogleMapController mapController;
+  GoogleMapController? mapController;
   LatLng? _currentLocation;
   Set<Marker> markers = {};
   List<dynamic> technicians = [];
   bool _isLoading = true;
   String? _userType;
+  bool _isAvailable = false;
+  String? _errorMessage;
 
-  // أنواع الخدمات
   final List<Map<String, String>> serviceTypes = [
     {'id': 'plumbing', 'en': 'Plumbing', 'ar': 'سباكة', 'icon': '🚰'},
     {'id': 'ac', 'en': 'Air Conditioning', 'ar': 'تكييف', 'icon': '❄️'},
@@ -43,17 +44,17 @@ class _MapsScreenState extends State<MapsScreen> {
   }
 
   Future<void> _initializeMap() async {
+    _errorMessage = null;
     try {
       await _getUserType();
       await _getCurrentLocation();
-      if (_userType == 'user') {
+      if (_userType == 'technician') {
+        await _getTechnicianAvailability();
+      } else {
         await _loadTechnicians();
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
-      }
+      _errorMessage = e.toString();
     }
     if (mounted) setState(() => _isLoading = false);
   }
@@ -69,13 +70,30 @@ class _MapsScreenState extends State<MapsScreen> {
             .get();
 
         if (snapshot.exists) {
-          setState(() {
-            _userType = snapshot.value as String;
-          });
+          _userType = snapshot.value as String?;
         }
       }
     } catch (e) {
-      print('Error getting user type: $e');
+      // Non-fatal: defaults to regular user view.
+    }
+  }
+
+  Future<void> _getTechnicianAvailability() async {
+    try {
+      final userId = FirebaseAuth.instance.currentUser?.uid;
+      if (userId != null) {
+        final snapshot = await FirebaseDatabase.instance
+            .ref('users')
+            .child(userId)
+            .child('isAvailable')
+            .get();
+
+        if (snapshot.exists) {
+          _isAvailable = snapshot.value as bool? ?? false;
+        }
+      }
+    } catch (e) {
+      // Non-fatal.
     }
   }
 
@@ -85,50 +103,63 @@ class _MapsScreenState extends State<MapsScreen> {
 
     serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      throw 'Location services are disabled.';
+      throw widget.isEnglish
+          ? 'Location services are disabled.'
+          : 'خدمة تحديد الموقع غير مفعّلة.';
     }
 
     permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
       if (permission == LocationPermission.denied) {
-        throw 'Location permissions are denied';
+        throw widget.isEnglish
+            ? 'Location permissions are denied'
+            : 'تم رفض إذن الموقع';
       }
     }
 
-    try {
-      final position = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
+    if (permission == LocationPermission.deniedForever) {
+      throw widget.isEnglish
+          ? 'Location permissions are permanently denied'
+          : 'تم رفض إذن الموقع بشكل دائم';
+    }
 
-      final userId = FirebaseAuth.instance.currentUser?.uid;
-      if (userId != null) {
-        await FirebaseDatabase.instance.ref('users').child(userId).update({
-          'latitude': position.latitude,
-          'longitude': position.longitude,
-        });
-      }
+    final position = await Geolocator.getCurrentPosition(
+      desiredAccuracy: LocationAccuracy.high,
+    );
 
-      setState(() {
-        _currentLocation = LatLng(position.latitude, position.longitude);
-
-        markers.add(
-          Marker(
-            markerId: const MarkerId('current_location'),
-            position: _currentLocation!,
-            infoWindow: InfoWindow(
-              title: widget.isEnglish ? 'Your Location' : 'موقعك الحالي',
-            ),
-            icon: BitmapDescriptor.defaultMarkerWithHue(
-              BitmapDescriptor.hueBlue,
-            ),
-          ),
-        );
+    final userId = FirebaseAuth.instance.currentUser?.uid;
+    if (userId != null) {
+      await FirebaseDatabase.instance.ref('users').child(userId).update({
+        'latitude': position.latitude,
+        'longitude': position.longitude,
       });
-    } catch (e) {
-      print('Error getting location: $e');
-      throw 'Failed to get location: $e';
     }
+
+    setState(() {
+      _currentLocation = LatLng(position.latitude, position.longitude);
+
+      markers.add(
+        Marker(
+          markerId: const MarkerId('current_location'),
+          position: _currentLocation!,
+          infoWindow: InfoWindow(
+            title: widget.isEnglish ? 'Your Location' : 'موقعك الحالي',
+          ),
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue),
+        ),
+      );
+    });
+  }
+
+  double _calculateDistance(LatLng userLocation, LatLng techLocation) {
+    return Geolocator.distanceBetween(
+          userLocation.latitude,
+          userLocation.longitude,
+          techLocation.latitude,
+          techLocation.longitude,
+        ) /
+        1000;
   }
 
   Future<void> _loadTechnicians() async {
@@ -144,14 +175,31 @@ class _MapsScreenState extends State<MapsScreen> {
           if (user['userType'] == 'technician') {
             techs.add({
               'id': key,
+              'name': user['name'] ?? 'Technician',
               'email': user['email'],
-              'latitude': user['latitude'] ?? 30.0,
-              'longitude': user['longitude'] ?? 31.0,
+              'phone': user['phone'] ?? 'N/A',
+              'specializations': user['specializations'] ?? [],
+              'latitude': (user['latitude'] as num?)?.toDouble() ?? 30.0,
+              'longitude': (user['longitude'] as num?)?.toDouble() ?? 31.0,
               'rating': user['rating'] ?? 0.0,
               'isAvailable': user['isAvailable'] ?? false,
             });
           }
         });
+
+        if (_currentLocation != null) {
+          techs.sort((a, b) {
+            double distA = _calculateDistance(
+              _currentLocation!,
+              LatLng(a['latitude'], a['longitude']),
+            );
+            double distB = _calculateDistance(
+              _currentLocation!,
+              LatLng(b['latitude'], b['longitude']),
+            );
+            return distA.compareTo(distB);
+          });
+        }
 
         setState(() {
           technicians = techs;
@@ -159,7 +207,7 @@ class _MapsScreenState extends State<MapsScreen> {
         });
       }
     } catch (e) {
-      print('Error loading technicians: $e');
+      // Non-fatal: technician list stays empty, map still shows.
     }
   }
 
@@ -170,72 +218,18 @@ class _MapsScreenState extends State<MapsScreen> {
           markerId: MarkerId(tech['id']),
           position: LatLng(tech['latitude'], tech['longitude']),
           infoWindow: InfoWindow(
-            title: tech['email'],
+            title: tech['name'],
             snippet:
                 '${widget.isEnglish ? 'Rating: ' : 'التقييم: '}${tech['rating']}',
           ),
           icon: BitmapDescriptor.defaultMarkerWithHue(
             BitmapDescriptor.hueOrange,
           ),
-          onTap: () => _showTechnicianDetails(tech),
         ),
       );
     }
   }
 
-  void _showTechnicianDetails(dynamic tech) {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              widget.isEnglish ? 'Technician Details' : 'تفاصيل الفني',
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              '${widget.isEnglish ? 'Email: ' : 'البريد: '}${tech['email']}',
-            ),
-            const SizedBox(height: 8),
-            Text(
-              '${widget.isEnglish ? 'Rating: ' : 'التقييم: '}${tech['rating']} ⭐',
-            ),
-            const SizedBox(height: 8),
-            Text(
-              widget.isEnglish
-                  ? (tech['isAvailable'] ? 'Available' : 'Not Available')
-                  : (tech['isAvailable'] ? 'متوفر' : 'غير متوفر'),
-              style: TextStyle(
-                color: tech['isAvailable'] ? Colors.green : Colors.red,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: tech['isAvailable']
-                    ? () {
-                        Navigator.pop(context);
-                        _showServiceTypeDialog(tech);
-                      }
-                    : null,
-                child: Text(
-                  widget.isEnglish ? 'Request Service' : 'طلب الخدمة',
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // ✨ هنا: اختيار نوع الخدمة
   void _showServiceTypeDialog(dynamic tech) {
     showDialog(
       context: context,
@@ -277,7 +271,6 @@ class _MapsScreenState extends State<MapsScreen> {
     );
   }
 
-  // ✨ هنا: إرسال الطلب مع نوع الخدمة
   void _requestService(
     dynamic tech,
     String serviceTypeId,
@@ -287,7 +280,6 @@ class _MapsScreenState extends State<MapsScreen> {
       final userId = FirebaseAuth.instance.currentUser?.uid;
       final requestId = '${DateTime.now().millisecondsSinceEpoch}';
 
-      // احفظ الطلب في Firebase
       await FirebaseDatabase.instance
           .ref('service_requests')
           .child(requestId)
@@ -295,11 +287,13 @@ class _MapsScreenState extends State<MapsScreen> {
             'requestId': requestId,
             'userId': userId,
             'technicianId': tech['id'],
+            'technicianName': tech['name'],
+            'technicianPhone': tech['phone'],
             'technicianEmail': tech['email'],
-            'serviceType': serviceTypeId, // البوتجاز، السخان، إلخ
+            'serviceType': serviceTypeId,
             'serviceName': widget.isEnglish ? service['en'] : service['ar'],
             'serviceIcon': service['icon'],
-            'status': 'pending', // pending, accepted, completed
+            'status': 'pending',
             'userLocation': {
               'latitude': _currentLocation?.latitude,
               'longitude': _currentLocation?.longitude,
@@ -312,8 +306,8 @@ class _MapsScreenState extends State<MapsScreen> {
           SnackBar(
             content: Text(
               widget.isEnglish
-                  ? 'Service request sent to ${tech['email']}'
-                  : 'تم إرسال طلب الخدمة إلى ${tech['email']}',
+                  ? 'Service request sent to ${tech['name']}'
+                  : 'تم إرسال طلب الخدمة إلى ${tech['name']}',
             ),
           ),
         );
@@ -331,117 +325,291 @@ class _MapsScreenState extends State<MapsScreen> {
     }
   }
 
+  Future<void> _toggleAvailability() async {
+    try {
+      final userId = FirebaseAuth.instance.currentUser?.uid;
+      if (userId != null) {
+        final newState = !_isAvailable;
+        await FirebaseDatabase.instance.ref('users').child(userId).update({
+          'isAvailable': newState,
+        });
+
+        setState(() => _isAvailable = newState);
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                newState
+                    ? (widget.isEnglish
+                          ? '🟢 You are now available'
+                          : '🟢 أنت الآن متاح')
+                    : (widget.isEnglish
+                          ? '🔴 You are now offline'
+                          : '🔴 أنت الآن غير متاح'),
+              ),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              widget.isEnglish
+                  ? 'Error updating status'
+                  : 'خطأ في تحديث الحالة',
+            ),
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(
-          _userType == 'technician'
-              ? (widget.isEnglish ? 'My Location' : 'موقعي')
-              : (widget.isEnglish ? 'Find Technician' : 'ابحث عن فني'),
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
-        centerTitle: true,
-      ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : _currentLocation == null
-          ? Center(
-              child: Text(
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_currentLocation == null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.location_off, size: 60, color: Colors.grey),
+              const SizedBox(height: 16),
+              Text(
                 widget.isEnglish
                     ? 'Unable to get location'
                     : 'تعذر الحصول على الموقع',
+                textAlign: TextAlign.center,
               ),
-            )
-          : Stack(
-              children: [
-                GoogleMap(
-                  onMapCreated: (controller) {
-                    mapController = controller;
-                  },
-                  initialCameraPosition: CameraPosition(
-                    target: _currentLocation!,
-                    zoom: 15,
-                  ),
-                  markers: markers,
-                  myLocationEnabled: true,
-                  myLocationButtonEnabled: true,
-                  zoomControlsEnabled: true,
+              if (_errorMessage != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  _errorMessage!,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey[600], fontSize: 13),
                 ),
-                if (_userType == 'user')
-                  Positioned(
-                    bottom: 24,
-                    left: 16,
-                    right: 16,
-                    child: Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.2),
-                            blurRadius: 8,
-                          ),
-                        ],
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            '${technicians.where((t) => t['isAvailable']).length} ${widget.isEnglish ? 'technicians nearby' : 'فنيين قريبين'}',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14,
-                            ),
-                          ),
-                          ElevatedButton.icon(
-                            onPressed: _loadTechnicians,
-                            icon: const Icon(Icons.refresh, size: 18),
-                            label: Text(widget.isEnglish ? 'Refresh' : 'تحديث'),
-                          ),
-                        ],
-                      ),
-                    ),
-                  )
-                else
-                  Positioned(
-                    bottom: 24,
-                    left: 16,
-                    right: 16,
-                    child: Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.blue,
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.2),
-                            blurRadius: 8,
-                          ),
-                        ],
-                      ),
-                      child: Text(
-                        widget.isEnglish
-                            ? 'You are online and available for service requests'
-                            : 'أنت متصل وجاهز لاستقبال طلبات الخدمة',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 14,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
-                  ),
               ],
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () {
+                  setState(() => _isLoading = true);
+                  _initializeMap();
+                },
+                child: Text(widget.isEnglish ? 'Retry' : 'إعادة المحاولة'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return _userType == 'technician'
+        ? _buildTechnicianView()
+        : _buildUserView();
+  }
+
+  // ✨ واجهة المستخدم العادي
+  Widget _buildUserView() {
+    return Column(
+      children: [
+        Expanded(
+          flex: 60,
+          child: GoogleMap(
+            onMapCreated: (controller) {
+              mapController = controller;
+            },
+            initialCameraPosition: CameraPosition(
+              target: _currentLocation!,
+              zoom: 15,
             ),
+            markers: markers,
+            myLocationEnabled: true,
+            myLocationButtonEnabled: true,
+            zoomControlsEnabled: true,
+          ),
+        ),
+        Expanded(
+          flex: 40,
+          child: Column(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                color: Colors.blue,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      widget.isEnglish
+                          ? '${technicians.where((t) => t['isAvailable']).length} Available'
+                          : '${technicians.where((t) => t['isAvailable']).length} متاحين',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
+                    ),
+                    ElevatedButton.icon(
+                      onPressed: _loadTechnicians,
+                      icon: const Icon(Icons.refresh, size: 18),
+                      label: Text(widget.isEnglish ? 'Refresh' : 'تحديث'),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: technicians.isEmpty
+                    ? Center(
+                        child: Text(
+                          widget.isEnglish
+                              ? 'No technicians found'
+                              : 'لا يوجد فنيين',
+                          style: TextStyle(color: Colors.grey[600]),
+                        ),
+                      )
+                    : ListView.builder(
+                        itemCount: technicians.length,
+                        itemBuilder: (context, index) {
+                          final tech = technicians[index];
+                          final distance = _currentLocation != null
+                              ? _calculateDistance(
+                                  _currentLocation!,
+                                  LatLng(tech['latitude'], tech['longitude']),
+                                )
+                              : 0.0;
+
+                          return Container(
+                            margin: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: tech['isAvailable']
+                                    ? Colors.green
+                                    : Colors.grey,
+                                width: 2,
+                              ),
+                              color: index == 0
+                                  ? Colors.blue.withOpacity(0.1)
+                                  : Colors.white,
+                            ),
+                            child: ListTile(
+                              leading: CircleAvatar(
+                                backgroundColor: tech['isAvailable']
+                                    ? Colors.green
+                                    : Colors.grey,
+                                child: Text(
+                                  tech['isAvailable'] ? '🟢' : '🔴',
+                                  style: const TextStyle(fontSize: 20),
+                                ),
+                              ),
+                              title: Text(
+                                tech['name'],
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              subtitle: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '📱 ${tech['phone']}',
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                  Text(
+                                    '⭐ ${tech['rating']}',
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                  Text(
+                                    '📍 ${distance.toStringAsFixed(1)} ${widget.isEnglish ? 'km' : 'كم'}',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.blue,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              trailing: ElevatedButton(
+                                onPressed: tech['isAvailable']
+                                    ? () => _showServiceTypeDialog(tech)
+                                    : null,
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: tech['isAvailable']
+                                      ? Colors.green
+                                      : Colors.grey,
+                                ),
+                                child: Text(
+                                  widget.isEnglish ? 'Request' : 'طلب',
+                                  style: const TextStyle(color: Colors.white),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ✨ واجهة الفني
+  Widget _buildTechnicianView() {
+    return Stack(
+      children: [
+        GoogleMap(
+          onMapCreated: (controller) {
+            mapController = controller;
+          },
+          initialCameraPosition: CameraPosition(
+            target: _currentLocation!,
+            zoom: 15,
+          ),
+          markers: markers,
+          myLocationEnabled: true,
+          myLocationButtonEnabled: true,
+          zoomControlsEnabled: true,
+        ),
+        Positioned(
+          bottom: 24,
+          left: 16,
+          right: 16,
+          child: ElevatedButton(
+            onPressed: _toggleAvailability,
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _isAvailable ? Colors.green : Colors.red,
+              padding: const EdgeInsets.symmetric(vertical: 16),
+            ),
+            child: Text(
+              _isAvailable
+                  ? (widget.isEnglish ? '🟢 Available' : '🟢 متاح')
+                  : (widget.isEnglish ? '🔴 Offline' : '🔴 غير متاح'),
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
   @override
   void dispose() {
-    mapController.dispose();
+    mapController?.dispose();
     super.dispose();
   }
 }
