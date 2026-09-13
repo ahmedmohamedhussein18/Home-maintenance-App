@@ -59,13 +59,34 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    if (!_isLoginMode && _phoneController.text.trim().isEmpty) {
+    final emailPattern = RegExp(r'^[\w\.\-]+@[\w\-]+\.[a-zA-Z]{2,}$');
+    if (!emailPattern.hasMatch(email)) {
       setState(() {
         _errorMessage = widget.isEnglish
-            ? 'Please enter your phone number'
-            : 'من فضلك أدخل رقم هاتفك';
+            ? 'Please enter a valid email address'
+            : 'من فضلك أدخل بريدًا إلكترونيًا صحيحًا';
       });
       return;
+    }
+
+    if (!_isLoginMode) {
+      final phone = _phoneController.text.trim();
+      if (phone.isEmpty) {
+        setState(() {
+          _errorMessage = widget.isEnglish
+              ? 'Please enter your phone number'
+              : 'من فضلك أدخل رقم هاتفك';
+        });
+        return;
+      }
+      if (!RegExp(r'^01[0-9]{9}$').hasMatch(phone)) {
+        setState(() {
+          _errorMessage = widget.isEnglish
+              ? 'Phone number must be 11 digits and start with 01'
+              : 'رقم الهاتف لازم يكون 11 رقم ';
+        });
+        return;
+      }
     }
 
     setState(() {
@@ -87,23 +108,100 @@ class _LoginScreenState extends State<LoginScreen> {
             .createUserWithEmailAndPassword(email: email, password: password);
 
         final userId = userCredential.user!.uid;
-        await FirebaseDatabase.instance.ref('users').child(userId).set({
-          'uid': userId,
-          'email': email,
-          'phone': _phoneController.text.trim(),
-          'userType': _selectedUserType,
-        });
+        final phone = _phoneController.text.trim();
+
+        // نتابع هل حجزنا الرقم فعليًا في phone_index عشان نعرف نرجع فيه
+        // (rollback) لو أي خطوة بعده فشلت.
+        bool phoneClaimed = false;
+
+        try {
+          final phoneSnapshot = await FirebaseDatabase.instance
+              .ref('phone_index')
+              .child(phone)
+              .get();
+
+          if (phoneSnapshot.exists) {
+            // الرقم فعلاً متأخد بحساب تاني
+            await userCredential.user!.delete();
+            setState(() {
+              _errorMessage = widget.isEnglish
+                  ? 'This phone number is already registered to another account'
+                  : 'رقم الهاتف ده متسجل بحساب تاني بالفعل';
+            });
+            return;
+          }
+
+          // الرقم متاح، نحجزه دلوقتي
+          await FirebaseDatabase.instance
+              .ref('phone_index')
+              .child(phone)
+              .set(userId);
+          phoneClaimed = true;
+
+          await FirebaseDatabase.instance.ref('users').child(userId).set({
+            'uid': userId,
+            'email': email,
+            'phone': phone,
+            'userType': _selectedUserType,
+          });
+
+          await userCredential.user!.sendEmailVerification();
+        } catch (e) {
+          // أي فشل هنا (صلاحيات، شبكة، فشل كتابة users، فشل إرسال الإيميل...)
+          // لازم نرجع بالكامل: نمسح حجز الرقم لو اتحجز، ونمسح حساب الـ auth.
+          if (phoneClaimed) {
+            await FirebaseDatabase.instance
+                .ref('phone_index')
+                .child(phone)
+                .remove();
+          }
+          await userCredential.user!.delete();
+          setState(() {
+            _errorMessage = widget.isEnglish
+                ? 'Registration failed. Please try again.'
+                : 'فشل التسجيل. حاول تاني.';
+          });
+          return;
+        }
       }
 
       setState(() => _errorMessage = null);
     } on FirebaseAuthException catch (e) {
+      // ignore: avoid_print
+      print('FirebaseAuthException code: ${e.code} | message: ${e.message}');
       setState(() {
         _errorMessage = widget.isEnglish
             ? e.message ?? 'Auth failed'
-            : 'فشل التحقق';
+            : (_authErrorMessageAr(e.code));
       });
     } finally {
       if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  // بترجع رسالة عربي واضحة حسب كود الخطأ الحقيقي بدل رسالة عامة واحدة
+  // بتخفي السبب الحقيقي.
+  String _authErrorMessageAr(String code) {
+    switch (code) {
+      case 'user-not-found':
+        return 'لا يوجد حساب بهذا البريد الإلكتروني';
+      case 'wrong-password':
+      case 'invalid-credential':
+        return 'كلمة المرور غير صحيحة';
+      case 'invalid-email':
+        return 'صيغة البريد الإلكتروني غير صحيحة';
+      case 'user-disabled':
+        return 'تم تعطيل هذا الحساب';
+      case 'too-many-requests':
+        return 'محاولات كثيرة جداً، حاول بعد قليل';
+      case 'network-request-failed':
+        return 'تحقق من اتصال الإنترنت وحاول مرة أخرى';
+      case 'email-already-in-use':
+        return 'هذا البريد الإلكتروني مستخدم بالفعل';
+      case 'weak-password':
+        return 'كلمة المرور ضعيفة جداً';
+      default:
+        return 'فشل التحقق ($code)';
     }
   }
 
@@ -114,7 +212,7 @@ class _LoginScreenState extends State<LoginScreen> {
       setState(() {
         _errorMessage = widget.isEnglish
             ? 'Enter your email above first, then tap "Forgot password?"'
-            : 'اكتبي إيميلك فوق الأول، وبعدين دوسي "نسيت كلمة المرور؟"';
+            : 'اكتب إيميلك فوق الأول، وبعدين دوس "نسيت كلمة المرور؟"';
         _infoMessage = null;
       });
       return;

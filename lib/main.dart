@@ -7,12 +7,14 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import 'firebase_options.dart';
 import 'login_screen.dart';
 import 'maps_screen.dart';
 import 'service_requests_screen.dart';
 import 'technician_profile_screen.dart';
+import 'verify_email_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -93,33 +95,51 @@ class _HomeMaintenanceAppState extends State<HomeMaintenanceApp> {
             );
           }
 
-          final isLoggedIn = snapshot.hasData;
+          final user = snapshot.data;
+          final isLoggedIn = user != null;
+          // Only require verification for accounts created after this
+          // feature shipped — existing accounts are grandfathered in so
+          // real users already using the app aren't locked out.
+          final verificationCutoff = DateTime(2026, 9, 13);
+          final createdAt = user?.metadata.creationTime;
+          final isNewAccount =
+              createdAt != null && createdAt.isAfter(verificationCutoff);
+          final isVerified = !isNewAccount || (user?.emailVerified ?? false);
 
-          return isLoggedIn
-              ? AppRoot(
-                  isDarkMode: isDarkMode,
-                  isEnglish: isEnglish,
-                  onThemeChanged: (value) {
-                    setState(() => isDarkMode = value);
-                    _saveSettings();
-                  },
-                  onLanguageChanged: (value) {
-                    setState(() => isEnglish = value);
-                    _saveSettings();
-                  },
-                )
-              : LoginScreen(
-                  isEnglish: isEnglish,
-                  isDarkMode: isDarkMode,
-                  onLanguageChanged: (value) {
-                    setState(() => isEnglish = value);
-                    _saveSettings();
-                  },
-                  onThemeChanged: (value) {
-                    setState(() => isDarkMode = value);
-                    _saveSettings();
-                  },
-                );
+          if (!isLoggedIn) {
+            return LoginScreen(
+              isEnglish: isEnglish,
+              isDarkMode: isDarkMode,
+              onLanguageChanged: (value) {
+                setState(() => isEnglish = value);
+                _saveSettings();
+              },
+              onThemeChanged: (value) {
+                setState(() => isDarkMode = value);
+                _saveSettings();
+              },
+            );
+          }
+
+          if (!isVerified) {
+            return VerifyEmailScreen(
+              isEnglish: isEnglish,
+              onVerified: () => setState(() {}),
+            );
+          }
+
+          return AppRoot(
+            isDarkMode: isDarkMode,
+            isEnglish: isEnglish,
+            onThemeChanged: (value) {
+              setState(() => isDarkMode = value);
+              _saveSettings();
+            },
+            onLanguageChanged: (value) {
+              setState(() => isEnglish = value);
+              _saveSettings();
+            },
+          );
         },
       ),
     );
@@ -169,6 +189,88 @@ class _AppRootState extends State<AppRoot> with SingleTickerProviderStateMixin {
     ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeOutBack));
     _controller.forward();
     _hideSplashAfterDelay();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdate());
+  }
+
+  Future<void> _checkForUpdate() async {
+    try {
+      final snapshot = await FirebaseDatabase.instance.ref('app_config').get();
+      if (!snapshot.exists) return;
+
+      final config = Map<String, dynamic>.from(snapshot.value as Map);
+      final latestVersion = config['latestVersion'] as String? ?? '';
+      final downloadUrl = config['downloadUrl'] as String? ?? '';
+      final releaseNotes = config['releaseNotes'] as String? ?? '';
+      if (latestVersion.isEmpty || downloadUrl.isEmpty) return;
+
+      final packageInfo = await PackageInfo.fromPlatform();
+      final currentVersion = packageInfo.version;
+
+      if (_isNewerVersion(latestVersion, currentVersion) && mounted) {
+        _showUpdateDialog(latestVersion, downloadUrl, releaseNotes);
+      }
+    } catch (e) {
+      // Non-fatal: update check silently skipped (e.g. offline).
+    }
+  }
+
+  bool _isNewerVersion(String latest, String current) {
+    List<int> parse(String v) =>
+        v.split('.').map((p) => int.tryParse(p) ?? 0).toList();
+    final latestParts = parse(latest);
+    final currentParts = parse(current);
+    for (var i = 0; i < 3; i++) {
+      final l = i < latestParts.length ? latestParts[i] : 0;
+      final c = i < currentParts.length ? currentParts[i] : 0;
+      if (l > c) return true;
+      if (l < c) return false;
+    }
+    return false;
+  }
+
+  void _showUpdateDialog(
+    String latestVersion,
+    String downloadUrl,
+    String releaseNotes,
+  ) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text(widget.isEnglish ? 'Update Available' : 'يوجد تحديث جديد'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.isEnglish
+                  ? 'A new version ($latestVersion) is available.'
+                  : 'فيه نسخة جديدة ($latestVersion) متاحة.',
+            ),
+            if (releaseNotes.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(releaseNotes, style: const TextStyle(fontSize: 13)),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(widget.isEnglish ? 'Later' : 'لاحقًا'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final uri = Uri.parse(downloadUrl);
+              if (await canLaunchUrl(uri)) {
+                await launchUrl(uri, mode: LaunchMode.externalApplication);
+              }
+              if (context.mounted) Navigator.pop(context);
+            },
+            child: Text(widget.isEnglish ? 'Update Now' : 'تحديث الآن'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _hideSplashAfterDelay() async {
@@ -464,10 +566,12 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
         final map = Map<String, dynamic>.from(value as Map);
         final matches = isTechnician
             ? (map['technicianId'] == userId &&
-                  map['status'] == 'pending' &&
+                  (map['status'] == 'pending' ||
+                      map['status'] == 'scheduled') &&
                   map['seenByTechnician'] != true)
             : (map['userId'] == userId &&
                   map['status'] != 'pending' &&
+                  map['status'] != 'scheduled' &&
                   map['seenByUser'] != true);
         if (matches) {
           _requestsRef.child(key).update({
@@ -586,6 +690,94 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
     if (await canLaunchUrl(launchUri)) {
       await launchUrl(launchUri);
     }
+  }
+
+  Future<void> _deleteAccount() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    final userId = user.uid;
+
+    try {
+      // Clean up database records first, while still authenticated.
+      await FirebaseDatabase.instance.ref('users').child(userId).remove();
+      await _itemsRef.child(userId).remove();
+      await _contactsRef.child(userId).remove();
+
+      // Now delete the authentication account itself.
+      // No manual navigation needed — the auth StreamBuilder at the app
+      // root reacts to this automatically and shows the login screen.
+      await user.delete();
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'requires-recent-login') {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                widget.isEnglish
+                    ? 'For security, please sign out and sign back in, then try deleting your account again.'
+                    : 'لأسباب أمنية، سجّلي خروج وادخلي تاني، وبعدين جربي تحذفي الحساب تاني.',
+              ),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              widget.isEnglish
+                  ? 'Failed to delete account: ${e.message}'
+                  : 'فشل حذف الحساب: ${e.message}',
+            ),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              widget.isEnglish
+                  ? 'Something went wrong deleting your account.'
+                  : 'حصلت مشكلة أثناء حذف الحساب.',
+            ),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  void _confirmDeleteAccount() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(widget.isEnglish ? 'Delete Account?' : 'حذف الحساب؟'),
+        content: Text(
+          widget.isEnglish
+              ? 'This will permanently delete your profile, devices, contacts, and all your data. This cannot be undone.'
+              : 'هيتم حذف ملفك الشخصي وأجهزتك وجهات اتصالك وكل بياناتك نهائيًا. الإجراء ده مش قابل للتراجع.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(widget.isEnglish ? 'Cancel' : 'إلغاء'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () {
+              Navigator.pop(context);
+              _deleteAccount();
+            },
+            child: Text(
+              widget.isEnglish ? 'Delete Forever' : 'حذف نهائيًا',
+              style: const TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<String?> _pickImage() async {
@@ -1112,10 +1304,12 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
                     final map = Map<String, dynamic>.from(value as Map);
                     final matches = isTechnician
                         ? (map['technicianId'] == userId &&
-                              map['status'] == 'pending' &&
+                              (map['status'] == 'pending' ||
+                                  map['status'] == 'scheduled') &&
                               map['seenByTechnician'] != true)
                         : (map['userId'] == userId &&
                               map['status'] != 'pending' &&
+                              map['status'] != 'scheduled' &&
                               map['seenByUser'] != true);
                     if (matches) unread++;
                   });
@@ -1528,10 +1722,23 @@ class _MaintenanceHomeScreenState extends State<MaintenanceHomeScreen> {
           ),
           onTap: () async {
             await FirebaseAuth.instance.signOut();
-            if (mounted) {
-              Navigator.of(context).pushReplacementNamed('/');
-            }
           },
+        ),
+        ListTile(
+          leading: const Icon(Icons.delete_forever, color: Colors.red),
+          title: Text(
+            widget.isEnglish ? 'Delete Account' : 'حذف الحساب',
+            style: const TextStyle(
+              color: Colors.red,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          subtitle: Text(
+            widget.isEnglish
+                ? 'Permanently delete your account and data'
+                : 'حذف حسابك وبياناتك نهائيًا',
+          ),
+          onTap: _confirmDeleteAccount,
         ),
       ],
     );

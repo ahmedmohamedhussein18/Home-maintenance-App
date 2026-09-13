@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
@@ -22,6 +24,8 @@ class _MapsScreenState extends State<MapsScreen> {
   String? _userType;
   bool _isAvailable = false;
   String? _errorMessage;
+  String? _selectedFilter;
+  StreamSubscription<Position>? _positionStream;
 
   final List<Map<String, String>> serviceTypes = [
     {'id': 'plumbing', 'en': 'Plumbing', 'ar': 'سباكة', 'icon': '🚰'},
@@ -37,7 +41,12 @@ class _MapsScreenState extends State<MapsScreen> {
     {'id': 'other', 'en': 'Other', 'ar': 'أخرى', 'icon': '🔧'},
   ];
 
-  String _specializationLabel(String id) {
+  String _specializationLabel(String id, {String? otherSpecialty}) {
+    if (id == 'other' &&
+        otherSpecialty != null &&
+        otherSpecialty.trim().isNotEmpty) {
+      return '🔧 $otherSpecialty';
+    }
     final match = serviceTypes.firstWhere(
       (s) => s['id'] == id,
       orElse: () => {'en': id, 'ar': id, 'icon': '🔧'},
@@ -58,6 +67,7 @@ class _MapsScreenState extends State<MapsScreen> {
       await _getCurrentLocation();
       if (_userType == 'technician') {
         await _getTechnicianAvailability();
+        _startLiveLocationUpdates();
       } else {
         await _loadTechnicians();
       }
@@ -65,6 +75,29 @@ class _MapsScreenState extends State<MapsScreen> {
       _errorMessage = e.toString();
     }
     if (mounted) setState(() => _isLoading = false);
+  }
+
+  void _startLiveLocationUpdates() {
+    _positionStream?.cancel();
+    _positionStream =
+        Geolocator.getPositionStream(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+            distanceFilter: 50, // update only after moving ~50 meters
+          ),
+        ).listen((position) {
+          final userId = FirebaseAuth.instance.currentUser?.uid;
+          if (userId == null) return;
+          FirebaseDatabase.instance.ref('users').child(userId).update({
+            'latitude': position.latitude,
+            'longitude': position.longitude,
+          });
+          if (mounted) {
+            setState(() {
+              _currentLocation = LatLng(position.latitude, position.longitude);
+            });
+          }
+        });
   }
 
   Future<void> _getUserType() async {
@@ -193,6 +226,7 @@ class _MapsScreenState extends State<MapsScreen> {
               'email': user['email'],
               'phone': user['phone'] ?? 'N/A',
               'specializations': specs,
+              'otherSpecialty': user['otherSpecialty'] as String? ?? '',
               'latitude': (user['latitude'] as num?)?.toDouble() ?? 30.0,
               'longitude': (user['longitude'] as num?)?.toDouble() ?? 31.0,
               'rating': user['rating'] ?? 0.0,
@@ -269,7 +303,11 @@ class _MapsScreenState extends State<MapsScreen> {
                 ),
                 onTap: () {
                   Navigator.pop(context);
-                  _requestService(tech, service['id']!, service);
+                  if (tech['isAvailable'] == true) {
+                    _requestService(tech, service['id']!, service);
+                  } else {
+                    _showPreferredTimeDialog(tech, service['id']!, service);
+                  }
                 },
               );
             },
@@ -285,11 +323,69 @@ class _MapsScreenState extends State<MapsScreen> {
     );
   }
 
-  void _requestService(
+  void _showPreferredTimeDialog(
     dynamic tech,
     String serviceTypeId,
     Map<String, String> service,
-  ) async {
+  ) {
+    final timeController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(widget.isEnglish ? 'Schedule a Visit' : 'احجزي ميعاد'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.isEnglish
+                  ? '${tech['name']} is busy right now. When would work for you? The technician will contact you to confirm.'
+                  : '${tech['name']} مشغول دلوقتي. إيه الوقت اللي يناسبك؟ الفني هيكلمك يتفقوا معاكِ.',
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: timeController,
+              decoration: InputDecoration(
+                hintText: widget.isEnglish
+                    ? 'e.g. Tomorrow morning, this evening...'
+                    : 'مثلاً: بكرة الصبح، النهاردة بالليل...',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(widget.isEnglish ? 'Cancel' : 'إلغاء'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              final preferredTime = timeController.text.trim();
+              if (preferredTime.isEmpty) return;
+              Navigator.pop(context);
+              _requestService(
+                tech,
+                serviceTypeId,
+                service,
+                preferredTime: preferredTime,
+              );
+            },
+            child: Text(widget.isEnglish ? 'Send' : 'إرسال'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _requestService(
+    dynamic tech,
+    String serviceTypeId,
+    Map<String, String> service, {
+    String? preferredTime,
+  }) async {
     try {
       final userId = FirebaseAuth.instance.currentUser?.uid;
       final requestId = '${DateTime.now().millisecondsSinceEpoch}';
@@ -322,7 +418,8 @@ class _MapsScreenState extends State<MapsScreen> {
             'serviceType': serviceTypeId,
             'serviceName': widget.isEnglish ? service['en'] : service['ar'],
             'serviceIcon': service['icon'],
-            'status': 'pending',
+            'status': preferredTime != null ? 'scheduled' : 'pending',
+            'preferredTime': preferredTime,
             'userLocation': {
               'latitude': _currentLocation?.latitude,
               'longitude': _currentLocation?.longitude,
@@ -336,9 +433,13 @@ class _MapsScreenState extends State<MapsScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              widget.isEnglish
-                  ? 'Service request sent to ${tech['name']}'
-                  : 'تم إرسال طلب الخدمة إلى ${tech['name']}',
+              preferredTime != null
+                  ? (widget.isEnglish
+                        ? 'Appointment request sent to ${tech['name']}'
+                        : 'تم إرسال طلب الحجز إلى ${tech['name']}')
+                  : (widget.isEnglish
+                        ? 'Service request sent to ${tech['name']}'
+                        : 'تم إرسال طلب الخدمة إلى ${tech['name']}'),
             ),
           ),
         );
@@ -448,10 +549,18 @@ class _MapsScreenState extends State<MapsScreen> {
 
   // ✨ واجهة المستخدم العادي
   Widget _buildUserView() {
+    final filteredTechnicians = _selectedFilter == null
+        ? technicians
+        : technicians
+              .where(
+                (t) => (t['specializations'] as List).contains(_selectedFilter),
+              )
+              .toList();
+
     return Column(
       children: [
         Expanded(
-          flex: 60,
+          flex: 55,
           child: GoogleMap(
             onMapCreated: (controller) {
               mapController = controller;
@@ -466,6 +575,37 @@ class _MapsScreenState extends State<MapsScreen> {
             zoomControlsEnabled: true,
           ),
         ),
+        SizedBox(
+          height: 44,
+          child: ListView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: ChoiceChip(
+                  label: Text(widget.isEnglish ? 'All' : 'الكل'),
+                  selected: _selectedFilter == null,
+                  onSelected: (_) => setState(() => _selectedFilter = null),
+                ),
+              ),
+              ...serviceTypes.map((s) {
+                final isSelected = _selectedFilter == s['id'];
+                return Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: ChoiceChip(
+                    label: Text(
+                      '${s['icon']} ${widget.isEnglish ? s['en'] : s['ar']}',
+                    ),
+                    selected: isSelected,
+                    onSelected: (_) =>
+                        setState(() => _selectedFilter = s['id']),
+                  ),
+                );
+              }),
+            ],
+          ),
+        ),
         Expanded(
           flex: 40,
           child: Column(
@@ -478,8 +618,8 @@ class _MapsScreenState extends State<MapsScreen> {
                   children: [
                     Text(
                       widget.isEnglish
-                          ? '${technicians.where((t) => t['isAvailable']).length} Available'
-                          : '${technicians.where((t) => t['isAvailable']).length} متاحين',
+                          ? '${filteredTechnicians.where((t) => t['isAvailable']).length} Available'
+                          : '${filteredTechnicians.where((t) => t['isAvailable']).length} متاحين',
                       style: const TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.bold,
@@ -495,7 +635,7 @@ class _MapsScreenState extends State<MapsScreen> {
                 ),
               ),
               Expanded(
-                child: technicians.isEmpty
+                child: filteredTechnicians.isEmpty
                     ? Center(
                         child: Text(
                           widget.isEnglish
@@ -505,9 +645,9 @@ class _MapsScreenState extends State<MapsScreen> {
                         ),
                       )
                     : ListView.builder(
-                        itemCount: technicians.length,
+                        itemCount: filteredTechnicians.length,
                         itemBuilder: (context, index) {
-                          final tech = technicians[index];
+                          final tech = filteredTechnicians[index];
                           final distance = _currentLocation != null
                               ? _calculateDistance(
                                   _currentLocation!,
@@ -591,6 +731,9 @@ class _MapsScreenState extends State<MapsScreen> {
                                               child: Text(
                                                 _specializationLabel(
                                                   specId as String,
+                                                  otherSpecialty:
+                                                      tech['otherSpecialty']
+                                                          as String?,
                                                 ),
                                                 style: const TextStyle(
                                                   fontSize: 11,
@@ -604,16 +747,18 @@ class _MapsScreenState extends State<MapsScreen> {
                                 ],
                               ),
                               trailing: ElevatedButton(
-                                onPressed: tech['isAvailable']
-                                    ? () => _showServiceTypeDialog(tech)
-                                    : null,
+                                onPressed: () => _showServiceTypeDialog(tech),
                                 style: ElevatedButton.styleFrom(
                                   backgroundColor: tech['isAvailable']
                                       ? Colors.green
-                                      : Colors.grey,
+                                      : Colors.orange,
                                 ),
                                 child: Text(
-                                  widget.isEnglish ? 'Request' : 'طلب',
+                                  tech['isAvailable']
+                                      ? (widget.isEnglish ? 'Request' : 'طلب')
+                                      : (widget.isEnglish
+                                            ? 'Schedule'
+                                            : 'احجز'),
                                   style: const TextStyle(color: Colors.white),
                                 ),
                               ),
@@ -674,6 +819,7 @@ class _MapsScreenState extends State<MapsScreen> {
 
   @override
   void dispose() {
+    _positionStream?.cancel();
     mapController?.dispose();
     super.dispose();
   }

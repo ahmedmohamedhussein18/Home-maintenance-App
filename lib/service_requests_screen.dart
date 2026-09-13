@@ -3,6 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'request_chat_screen.dart';
+
 class ServiceRequestsScreen extends StatefulWidget {
   final bool isEnglish;
   final String? userType;
@@ -30,8 +32,63 @@ class _ServiceRequestsScreenState extends State<ServiceRequestsScreen> {
     });
   }
 
-  Future<void> _cancelRequest(String requestId) async {
-    await _requestsRef.child(requestId).update({'status': 'cancelled'});
+  Future<void> _cancelRequest(String requestId, String reason) async {
+    await _requestsRef.child(requestId).update({
+      'status': 'cancelled',
+      'cancelReason': reason,
+      'seenByTechnician': false,
+    });
+  }
+
+  void _showCancelDialog(String requestId) {
+    final reasonController = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(widget.isEnglish ? 'Cancel Request?' : 'إلغاء الطلب؟'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.isEnglish
+                  ? 'Let the technician know why (optional):'
+                  : 'ممكن تقوليلنا السبب (اختياري):',
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: reasonController,
+              decoration: InputDecoration(
+                hintText: widget.isEnglish
+                    ? 'e.g. Found another technician'
+                    : 'مثلاً: لقيت فني تاني',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              maxLines: 2,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(widget.isEnglish ? 'Back' : 'رجوع'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () {
+              Navigator.pop(context);
+              _cancelRequest(requestId, reasonController.text.trim());
+            },
+            child: Text(
+              widget.isEnglish ? 'Cancel Request' : 'إلغاء الطلب',
+              style: const TextStyle(color: Colors.white),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _deleteRequest(String requestId) async {
@@ -52,39 +109,171 @@ class _ServiceRequestsScreenState extends State<ServiceRequestsScreen> {
     }
   }
 
-  Future<void> _submitRating(
+  Future<bool> _submitRating(
     String requestId,
     String technicianId,
     int stars,
   ) async {
-    final techRef = FirebaseDatabase.instance.ref('users').child(technicianId);
-    final snapshot = await techRef.get();
-    double currentRating = 0.0;
-    int currentCount = 0;
-    if (snapshot.exists) {
-      final data = snapshot.value as Map;
-      currentRating = (data['rating'] as num?)?.toDouble() ?? 0.0;
-      currentCount = (data['ratingCount'] as num?)?.toInt() ?? 0;
+    try {
+      final techRef = FirebaseDatabase.instance
+          .ref('users')
+          .child(technicianId);
+      final snapshot = await techRef.get();
+      double currentRating = 0.0;
+      int currentCount = 0;
+      if (snapshot.exists && snapshot.value is Map) {
+        final data = Map<String, dynamic>.from(snapshot.value as Map);
+        currentRating = (data['rating'] as num?)?.toDouble() ?? 0.0;
+        currentCount = (data['ratingCount'] as num?)?.toInt() ?? 0;
+      }
+
+      final newCount = currentCount + 1;
+      final newRating = ((currentRating * currentCount) + stars) / newCount;
+
+      await techRef.update({
+        'rating': double.parse(newRating.toStringAsFixed(2)),
+        'ratingCount': newCount,
+      });
+
+      await _requestsRef.child(requestId).update({'rated': true});
+      return true;
+    } catch (e) {
+      debugPrint('Rating submission failed: $e');
+      return false;
     }
+  }
 
-    final newCount = currentCount + 1;
-    final newRating = ((currentRating * currentCount) + stars) / newCount;
+  void _showAddToDevicesDialog(Map<String, dynamic> req) {
+    DateTime? selectedDate;
+    final costController = TextEditingController();
 
-    await techRef.update({
-      'rating': double.parse(newRating.toStringAsFixed(2)),
-      'ratingCount': newCount,
-    });
+    showDialog(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
+          return AlertDialog(
+            title: Text(
+              widget.isEnglish ? 'Add to My Devices' : 'أضف لسجل أجهزتي',
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  widget.isEnglish
+                      ? 'This will add "${req['serviceName']}" to your maintenance log.'
+                      : 'هيتم إضافة "${req['serviceName']}" لسجل صيانتك.',
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        selectedDate == null
+                            ? (widget.isEnglish
+                                  ? 'Next maintenance date'
+                                  : 'موعد الصيانة الجاية')
+                            : selectedDate!.toLocal().toString().split(' ')[0],
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () async {
+                        final picked = await showDatePicker(
+                          context: dialogContext,
+                          initialDate: DateTime.now().add(
+                            const Duration(days: 180),
+                          ),
+                          firstDate: DateTime.now(),
+                          lastDate: DateTime(2100),
+                        );
+                        if (picked != null) {
+                          setDialogState(() => selectedDate = picked);
+                        }
+                      },
+                      child: Text(widget.isEnglish ? 'Pick' : 'اختر'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: costController,
+                  keyboardType: const TextInputType.numberWithOptions(
+                    decimal: true,
+                  ),
+                  decoration: InputDecoration(
+                    labelText: widget.isEnglish
+                        ? 'Cost (L.E) — optional'
+                        : 'التكلفة (جنيه) — اختياري',
+                  ),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: Text(widget.isEnglish ? 'Cancel' : 'إلغاء'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  final userId = FirebaseAuth.instance.currentUser?.uid;
+                  if (userId == null) return;
 
-    await _requestsRef.child(requestId).update({'rated': true});
+                  final itemId = DateTime.now().millisecondsSinceEpoch
+                      .toString();
+                  await FirebaseDatabase.instance
+                      .ref('items')
+                      .child(userId)
+                      .child(itemId)
+                      .set({
+                        'id': itemId,
+                        'userId': userId,
+                        'title': req['serviceName'] ?? '',
+                        'targetDate':
+                            (selectedDate ??
+                                    DateTime.now().add(
+                                      const Duration(days: 180),
+                                    ))
+                                .toIso8601String(),
+                        'cost':
+                            double.tryParse(costController.text.trim()) ?? 0.0,
+                        'imageBase64': null,
+                      });
+
+                  await _requestsRef.child(req['requestId']).update({
+                    'linkedToDevices': true,
+                  });
+
+                  if (dialogContext.mounted) Navigator.pop(dialogContext);
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(
+                          widget.isEnglish
+                              ? 'Added to your devices'
+                              : 'تمت الإضافة لسجل أجهزتك',
+                        ),
+                        backgroundColor: Colors.green,
+                      ),
+                    );
+                  }
+                },
+                child: Text(widget.isEnglish ? 'Add' : 'إضافة'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   void _showRatingDialog(Map<String, dynamic> req) {
     int selectedStars = 5;
+    bool isSubmitting = false;
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) {
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) {
           return AlertDialog(
             title: Text(
               widget.isEnglish ? 'Rate the Technician' : 'قيّم الفني',
@@ -120,19 +309,50 @@ class _ServiceRequestsScreenState extends State<ServiceRequestsScreen> {
             ),
             actions: [
               TextButton(
-                onPressed: () => Navigator.pop(context),
+                onPressed: isSubmitting
+                    ? null
+                    : () => Navigator.pop(dialogContext),
                 child: Text(widget.isEnglish ? 'Skip' : 'تخطي'),
               ),
               ElevatedButton(
-                onPressed: () async {
-                  await _submitRating(
-                    req['requestId'],
-                    req['technicianId'],
-                    selectedStars,
-                  );
-                  if (context.mounted) Navigator.pop(context);
-                },
-                child: Text(widget.isEnglish ? 'Submit' : 'إرسال'),
+                onPressed: isSubmitting
+                    ? null
+                    : () async {
+                        setDialogState(() => isSubmitting = true);
+                        final success = await _submitRating(
+                          req['requestId'],
+                          req['technicianId'],
+                          selectedStars,
+                        );
+                        if (dialogContext.mounted) {
+                          Navigator.pop(dialogContext);
+                        }
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                success
+                                    ? (widget.isEnglish
+                                          ? 'Thanks for your rating!'
+                                          : 'شكرًا لتقييمك!')
+                                    : (widget.isEnglish
+                                          ? 'Failed to send rating. Check your connection and try again.'
+                                          : 'فشل إرسال التقييم. تأكدي من الاتصال وحاولي تاني.'),
+                              ),
+                              backgroundColor: success
+                                  ? Colors.green
+                                  : Colors.red,
+                            ),
+                          );
+                        }
+                      },
+                child: isSubmitting
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Text(widget.isEnglish ? 'Submit' : 'إرسال'),
               ),
             ],
           );
@@ -145,6 +365,8 @@ class _ServiceRequestsScreenState extends State<ServiceRequestsScreen> {
     switch (status) {
       case 'pending':
         return widget.isEnglish ? 'Pending' : 'قيد الانتظار';
+      case 'scheduled':
+        return widget.isEnglish ? 'Scheduled' : 'محجوز';
       case 'accepted':
         return widget.isEnglish ? 'Accepted' : 'مقبول';
       case 'declined':
@@ -162,6 +384,8 @@ class _ServiceRequestsScreenState extends State<ServiceRequestsScreen> {
     switch (status) {
       case 'pending':
         return Colors.orange;
+      case 'scheduled':
+        return Colors.purple;
       case 'accepted':
         return Colors.blue;
       case 'declined':
@@ -431,6 +655,19 @@ class _ServiceRequestsScreenState extends State<ServiceRequestsScreen> {
                                       fontSize: 13,
                                     ),
                                   ),
+                                  if (status == 'cancelled' &&
+                                      (req['cancelReason'] as String?)
+                                              ?.isNotEmpty ==
+                                          true) ...[
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      '${widget.isEnglish ? 'Reason: ' : 'السبب: '}${req['cancelReason']}',
+                                      style: const TextStyle(
+                                        fontSize: 13,
+                                        fontStyle: FontStyle.italic,
+                                      ),
+                                    ),
+                                  ],
                                 ] else ...[
                                   Text(
                                     '${widget.isEnglish ? 'Technician: ' : 'الفني: '}${req['technicianName'] ?? ''}',
@@ -445,8 +682,22 @@ class _ServiceRequestsScreenState extends State<ServiceRequestsScreen> {
                                     ),
                                   ),
                                 ],
+                                if ((req['preferredTime'] as String?)
+                                        ?.isNotEmpty ==
+                                    true) ...[
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    '🕐 ${widget.isEnglish ? 'Preferred time: ' : 'الوقت المطلوب: '}${req['preferredTime']}',
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
                                 const SizedBox(height: 12),
-                                if (isTechnician && status == 'pending') ...[
+                                if (isTechnician &&
+                                    (status == 'pending' ||
+                                        status == 'scheduled')) ...[
                                   Row(
                                     children: [
                                       Expanded(
@@ -505,9 +756,31 @@ class _ServiceRequestsScreenState extends State<ServiceRequestsScreen> {
                                             size: 18,
                                           ),
                                           label: Text(
-                                            widget.isEnglish
-                                                ? 'Call Customer'
-                                                : 'اتصال بالعميل',
+                                            widget.isEnglish ? 'Call' : 'اتصال',
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: OutlinedButton.icon(
+                                          onPressed: () => Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (_) => RequestChatScreen(
+                                                isEnglish: widget.isEnglish,
+                                                requestId: req['requestId'],
+                                                otherPartyName: widget.isEnglish
+                                                    ? 'Customer'
+                                                    : 'العميل',
+                                              ),
+                                            ),
+                                          ),
+                                          icon: const Icon(
+                                            Icons.chat_bubble_outline,
+                                            size: 18,
+                                          ),
+                                          label: Text(
+                                            widget.isEnglish ? 'Chat' : 'شات',
                                           ),
                                         ),
                                       ),
@@ -535,12 +808,13 @@ class _ServiceRequestsScreenState extends State<ServiceRequestsScreen> {
                                     ],
                                   ),
                                 ] else if (!isTechnician &&
-                                    status == 'pending') ...[
+                                    (status == 'pending' ||
+                                        status == 'scheduled')) ...[
                                   SizedBox(
                                     width: double.infinity,
                                     child: OutlinedButton.icon(
                                       onPressed: () =>
-                                          _cancelRequest(req['requestId']),
+                                          _showCancelDialog(req['requestId']),
                                       icon: const Icon(Icons.close, size: 18),
                                       label: Text(
                                         widget.isEnglish
@@ -554,40 +828,91 @@ class _ServiceRequestsScreenState extends State<ServiceRequestsScreen> {
                                   ),
                                 ] else if (!isTechnician &&
                                     status == 'accepted') ...[
-                                  SizedBox(
-                                    width: double.infinity,
-                                    child: ElevatedButton.icon(
-                                      onPressed: () =>
-                                          _callNumber(req['technicianPhone']),
-                                      icon: const Icon(Icons.phone, size: 18),
-                                      label: Text(
-                                        widget.isEnglish
-                                            ? 'Call Technician'
-                                            : 'اتصال بالفني',
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: ElevatedButton.icon(
+                                          onPressed: () => _callNumber(
+                                            req['technicianPhone'],
+                                          ),
+                                          icon: const Icon(
+                                            Icons.phone,
+                                            size: 18,
+                                          ),
+                                          label: Text(
+                                            widget.isEnglish ? 'Call' : 'اتصال',
+                                          ),
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: Colors.green,
+                                          ),
+                                        ),
                                       ),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: Colors.green,
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: OutlinedButton.icon(
+                                          onPressed: () => Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder: (_) => RequestChatScreen(
+                                                isEnglish: widget.isEnglish,
+                                                requestId: req['requestId'],
+                                                otherPartyName:
+                                                    req['technicianName'] ??
+                                                    (widget.isEnglish
+                                                        ? 'Technician'
+                                                        : 'الفني'),
+                                              ),
+                                            ),
+                                          ),
+                                          icon: const Icon(
+                                            Icons.chat_bubble_outline,
+                                            size: 18,
+                                          ),
+                                          label: Text(
+                                            widget.isEnglish ? 'Chat' : 'شات',
+                                          ),
+                                        ),
                                       ),
-                                    ),
+                                    ],
                                   ),
                                 ] else if (!isTechnician &&
-                                    status == 'completed' &&
-                                    req['rated'] != true) ...[
-                                  SizedBox(
-                                    width: double.infinity,
-                                    child: ElevatedButton.icon(
-                                      onPressed: () => _showRatingDialog(req),
-                                      icon: const Icon(Icons.star, size: 18),
-                                      label: Text(
-                                        widget.isEnglish
-                                            ? 'Rate Technician'
-                                            : 'قيّم الفني',
-                                      ),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: Colors.amber[700],
+                                    status == 'completed') ...[
+                                  if (req['rated'] != true)
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: ElevatedButton.icon(
+                                        onPressed: () => _showRatingDialog(req),
+                                        icon: const Icon(Icons.star, size: 18),
+                                        label: Text(
+                                          widget.isEnglish
+                                              ? 'Rate Technician'
+                                              : 'قيّم الفني',
+                                        ),
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: Colors.amber[700],
+                                        ),
                                       ),
                                     ),
-                                  ),
+                                  if (req['rated'] != true &&
+                                      req['linkedToDevices'] != true)
+                                    const SizedBox(height: 8),
+                                  if (req['linkedToDevices'] != true)
+                                    SizedBox(
+                                      width: double.infinity,
+                                      child: OutlinedButton.icon(
+                                        onPressed: () =>
+                                            _showAddToDevicesDialog(req),
+                                        icon: const Icon(
+                                          Icons.devices,
+                                          size: 18,
+                                        ),
+                                        label: Text(
+                                          widget.isEnglish
+                                              ? 'Add to My Devices'
+                                              : 'أضف لسجل أجهزتي',
+                                        ),
+                                      ),
+                                    ),
                                 ] else if (_showTrash) ...[
                                   SizedBox(
                                     width: double.infinity,
